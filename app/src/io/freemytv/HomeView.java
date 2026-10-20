@@ -97,8 +97,8 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     /** Most cards a tab can have (Home Settings: 3, 6, 9 or 12); past the third, the row scrolls. */
     private static final int MAX_CARDS = 12;
     private static final int Z_TOP = 4, Z_CARDS = 5, Z_ROWS = 6;
-    // Rows below the first (Apple TV style): poster cards, each row with its name; the page scrolls down to them and
-    // the shelf slides away. Measured unscrolled: row r's name at R_TOP + r * R_STEP. R_VIEW: where a focused row's
+    // Rows below the first (Apple TV style): poster cards, each row with its name, reached by ↓ from the shelf (big
+    // cards → shelf → rows → back to the big cards); the page scrolls down to them and the shelf slides away. Measured unscrolled: row r's name at R_TOP + r * R_STEP. R_VIEW: where a focused row's
     // name sits once the page has scrolled to it.
     private static final int MAX_ROWS = 3;
     // Posters 2:3 at 248 × 372 with the tvOS 40 px gap: six and a half across at 3 m, the cut one saying "there's more".
@@ -2640,6 +2640,13 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private boolean moveLight(int dx, int dy) {
         switch (zone) {
             case Z_SHELF:
+                // Down: into the rows below (the drawer only on a tab without them; HDMI Inputs opens it anyway).
+                if (dy > 0 && rowCount > 0 && !shelf.isEmpty()) {
+                    zone = Z_ROWS;
+                    rowIndex = 0;
+                    rowSlots[0].index = nearestOnScreen(rowSlots[0], tileRects[shelfIndex].centerX());
+                    break;
+                }
                 if (dy >= 0 || shelf.isEmpty()) return false;
                 if (cards.isEmpty()) {
                     zone = Z_TOP;
@@ -2657,11 +2664,6 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
                 } else if (dy < 0) {
                     zone = Z_TOP;
                     topIndex = tab;     // as on Apple TV: moving up to the tabs focuses the selected tab
-                } else if (rowCount > 0) {
-                    zone = Z_ROWS;
-                    rowIndex = 0;
-                    Row row = rowSlots[0];
-                    row.index = nearestOnScreen(row, cardRects[cardIndex].centerX());
                 } else {
                     zone = Z_SHELF;
                     if (!shelf.isEmpty()) shelfIndex = nearest(tileRects, tileRects.length, cardRects[cardIndex].centerX());
@@ -2679,8 +2681,8 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
                         rowIndex--;
                         rowSlots[rowIndex].index = nearestOnScreen(rowSlots[rowIndex], x);
                     } else {
-                        zone = Z_CARDS;
-                        cardIndex = nearest(cardRects, cards.size(), x);
+                        zone = Z_SHELF;     // the order down is: big cards, shelf, rows
+                        if (!shelf.isEmpty()) shelfIndex = nearest(tileRects, tileRects.length, x);
                     }
                 } else if (rowIndex < rowCount - 1) {
                     float x = row.rects[row.index].centerX();
