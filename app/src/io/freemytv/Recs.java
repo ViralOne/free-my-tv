@@ -46,6 +46,8 @@ final class Recs {
         String kind;            // "movie" or "tv"
         String title, backdrop, meta = "", app, pkg;
         String poster;          // TMDB's poster (portrait), for the rows below the first
+        String netflixId;       // Netflix's id for the title (from Wikidata), so OK opens it there, not Netflix's home
+        boolean netflixChecked; // asked Wikidata already (it doesn't know every title)
         // The title and details shortened to fit a card, cached (shortening on every frame of a scroll made it stutter)
         final String[] fit = new String[2];
         final float[] fitFor = new float[2];
@@ -448,6 +450,7 @@ final class Recs {
                 || !listLanguage.equals(Ui.language);
         boolean missing = false;
         for (Pick pick : wanted()) missing |= !pick.detailed || !hasImage(pick);
+        for (Pick pick : picks) missing |= "netflix".equals(pick.app) && !pick.netflixChecked;
         if (!stale && !missing) return;
         keyStamp = stamp;
         fetching = true;
@@ -474,6 +477,11 @@ final class Recs {
                         fetchDetails(pick);
                     } catch (Exception ignored) {
                     }
+                }
+                try {
+                    netflixIds();
+                } catch (Exception e) {
+                    AppLog.w("netflix ids: " + e.getMessage());
                 }
                 save();
                 if (tried > 0 && failures == tried) throw new IOException(last);
@@ -680,6 +688,47 @@ final class Recs {
         period = p;
         listAt = System.currentTimeMillis();
         listLanguage = Ui.language;
+    }
+
+    /**
+     * Netflix's own ids for the titles on Netflix, in one question to Wikidata (it links TMDB ids to Netflix's), so OK
+     * opens the title in Netflix. Titles it doesn't know (mostly the newest) keep opening Netflix's home.
+     */
+    private void netflixIds() throws IOException, org.json.JSONException {
+        StringBuilder movies = new StringBuilder(), shows = new StringBuilder();
+        List<Pick> asked = new ArrayList<>();
+        for (Pick p : picks) {
+            if (!"netflix".equals(p.app) || p.netflixChecked) continue;
+            ("movie".equals(p.kind) ? movies : shows).append(" \"").append(p.id).append('"');
+            asked.add(p);
+        }
+        if (asked.isEmpty()) return;
+        String query = "SELECT ?m ?t ?nf WHERE { { VALUES ?m {" + movies + " } ?i wdt:P4947 ?m. } UNION "
+                + "{ VALUES ?t {" + shows + " } ?i wdt:P4983 ?t. } ?i wdt:P1874 ?nf. }";
+        HttpURLConnection c = (HttpURLConnection) new URL("https://query.wikidata.org/sparql?query="
+                + URLEncoder.encode(query, "UTF-8")).openConnection();
+        c.setConnectTimeout(8000);
+        c.setReadTimeout(20000);
+        c.setRequestProperty("Accept", "application/sparql-results+json");
+        c.setRequestProperty("User-Agent", "FreeMyTV/1.0 (https://github.com/ViralOne/free-my-tv)");   // Wikidata asks for one
+        JSONArray rows;
+        try {
+            if (c.getResponseCode() != 200) throw new IOException("Wikidata returned HTTP " + c.getResponseCode());
+            rows = new JSONObject(read(c.getInputStream())).getJSONObject("results").getJSONArray("bindings");
+        } finally {
+            c.disconnect();
+        }
+        Map<String, String> ids = new HashMap<>();
+        for (int i = 0; i < rows.length(); i++) {
+            JSONObject r = rows.getJSONObject(i);
+            JSONObject m = r.optJSONObject("m"), t = r.optJSONObject("t");
+            String key = m != null ? "movie:" + m.optString("value") : t != null ? "tv:" + t.optString("value") : null;
+            if (key != null) ids.put(key, r.getJSONObject("nf").optString("value"));
+        }
+        for (Pick p : asked) {
+            p.netflixId = ids.get(key(p));
+            p.netflixChecked = true;
+        }
     }
 
     /** Language of titles and genres; the services come from the region. */
@@ -922,7 +971,8 @@ final class Recs {
                 a.put(new JSONObject().put("id", p.id).put("kind", p.kind).put("title", p.title).put("backdrop", p.backdrop)
                         .put("meta", p.meta).put("app", p.app == null ? "" : p.app).put("pkg", p.pkg == null ? "" : p.pkg)
                         .put("detailed", p.detailed).put("section", p.section == null ? "" : p.section)
-                        .put("poster", p.poster == null ? "" : p.poster));
+                        .put("poster", p.poster == null ? "" : p.poster)
+                        .put("netflixId", p.netflixId == null ? "" : p.netflixId).put("netflixChecked", p.netflixChecked));
             }
             cache.edit().putString("picks", a.toString()).putInt("period", period).putLong("listAt", listAt)
                     .putString("language", listLanguage)
@@ -947,6 +997,8 @@ final class Recs {
             p.detailed = o.optBoolean("detailed");
             p.section = o.optString("section").isEmpty() ? null : o.optString("section");
             p.poster = o.optString("poster").isEmpty() ? null : o.optString("poster");
+            p.netflixId = o.optString("netflixId").isEmpty() ? null : o.optString("netflixId");
+            p.netflixChecked = o.optBoolean("netflixChecked");
             out.add(p);
         }
         return out;

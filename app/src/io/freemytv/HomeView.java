@@ -2014,6 +2014,12 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         }
         if (p.pkg == null) return null;
         HomeApps.Item it = HomeApps.app(p.pkg, Recs.serviceName(p));
+        if (p.netflixId != null && "netflix".equals(p.app)) {
+            // The title's page in Netflix (the link Netflix's TV app takes); "source" 30 is how launchers open it.
+            it.intent = new android.content.Intent(android.content.Intent.ACTION_VIEW,
+                    android.net.Uri.parse("https://www.netflix.com/title/" + p.netflixId))
+                    .setPackage(p.pkg).putExtra("source", "30");
+        }
         if (p.playId != null) it.intent = Jellyfin.play(p);
         else if (p.itemId != null) it.intent = Jellyfin.intent(p);
         return it;
