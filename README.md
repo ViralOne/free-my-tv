@@ -85,6 +85,8 @@ The first values come from `config.properties`, created by the first build. Most
 | `temperature` | `C`, `F` or `auto` | `auto` |
 | `disable_assistant` | Also turn off Google Assistant | `false` |
 | `jellyfin_url`, `jellyfin_key`, `jellyfin_user` | Optional: a *Continue* tab with what you're watching on your Jellyfin server, opened in Wholphin (API key: Jellyfin → Dashboard → API Keys) | empty |
+| `hikari_url`, `hikari_token` | Optional: an *Anime* tab from your [Hikari](https://github.com/ViralOne/hikari) deck (watching, airing now, trending); owned titles open in Wholphin, the rest can be requested (token: Hikari → Settings) | empty |
+| `jellyseerr_url`, `jellyseerr_key` | Optional: request movies and shows that are neither in your Jellyfin library nor on an app on the TV (OK, then OK again) | empty |
 
 Changed something? Run `./build.sh` and install again. Keep `freemytv.keystore`: updates are signed with it.
 
@@ -160,7 +162,7 @@ The website ([freemytv.io](https://freemytv.io)) is in [`docs/`](docs): plain HT
 
 ## Privacy
 
-No accounts, no analytics, no tracking. The app talks to TMDB, Open-Meteo (with the coordinates you set), Binance only when `show_crypto=true`, and your own Jellyfin server only when you set one up. Your settings stay on your computer and your TV.
+No accounts, no analytics, no tracking. The app talks to TMDB, Open-Meteo (with the coordinates you set), Binance only when `show_crypto=true`, and your own Jellyfin, Hikari and Jellyseerr servers only when you set them up. Your settings stay on your computer and your TV.
 
 ## Credits
 

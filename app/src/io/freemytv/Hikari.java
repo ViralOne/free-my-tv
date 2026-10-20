@@ -37,13 +37,13 @@ final class Hikari {
 
     /** The group's name above its first card. */
     static String sectionLabel(String section) {
-        if (WATCHING.equals(section)) return Ui.tr("ASSISTINDO", "WATCHING", "VIENDO");
-        if (AIRING.equals(section)) return Ui.tr("NO AR AGORA", "AIRING NOW", "EN EMISIÓN");
-        if (TRENDING.equals(section)) return Ui.tr("EM ALTA NA SEMANA", "TRENDING THIS WEEK", "TENDENCIA ESTA SEMANA");
+        if (WATCHING.equals(section)) return Ui.tr("Assistindo", "Watching", "Viendo");
+        if (AIRING.equals(section)) return Ui.tr("No ar agora", "Airing now", "En emisión");
+        if (TRENDING.equals(section)) return Ui.tr("Em alta na semana", "Trending this week", "Tendencia esta semana");
         return "";
     }
 
-    /** Up to `cards` / 2 per group (at least 3), 12 in all. Runs off the UI thread. */
+    /** What you're watching (as many as Home Settings' cards), then up to 12 airing and 12 trending. Off the UI thread. */
     static List<Recs.Pick> fetch(int cards) throws IOException, org.json.JSONException {
         JSONArray rows = new JSONObject(read("/api/discover")).getJSONArray("rows");
         Map<String, JSONArray> byId = new HashMap<>();
@@ -51,7 +51,6 @@ final class Hikari {
             JSONObject r = rows.getJSONObject(i);
             byId.put(r.optString("id"), r.optJSONArray("media"));
         }
-        int each = Math.max(3, cards / 2);
         List<String[]> library = libraryOrEmpty();
         List<Recs.Pick> out = new ArrayList<>();
         Set<Integer> seen = new HashSet<>();
@@ -67,9 +66,9 @@ final class Hikari {
         }
         java.util.Collections.sort(watching, (a, b) -> b.optJSONObject("watch").optString("lastPlayed")
                 .compareTo(a.optJSONObject("watch").optString("lastPlayed")));
-        add(out, watching, WATCHING, each, library, true);
-        add(out, list(byId.get("airing"), seen), AIRING, each, library, false);
-        add(out, list(byId.get("trending"), seen), TRENDING, each, library, false);
+        add(out, watching, WATCHING, cards, library, true);
+        add(out, list(byId.get("airing"), seen), AIRING, Recs.MAX_OWN, library, false);
+        add(out, list(byId.get("trending"), seen), TRENDING, Recs.MAX_OWN, library, false);
         return out;
     }
 
@@ -86,7 +85,7 @@ final class Hikari {
                             boolean ownedOnly) {
         int added = 0;
         for (JSONObject m : media) {
-            if (added >= each || out.size() >= Recs.MAX_OWN) return;
+            if (added >= each) return;
             Recs.Pick p = pick(m, library, out.isEmpty());
             if (p == null || (ownedOnly && p.itemId == null)) continue;
             p.section = section;

@@ -44,12 +44,14 @@ final class Recs {
         int id;
         String kind;            // "movie" or "tv"
         String title, backdrop, meta = "", app, pkg;
+        String poster;          // TMDB's poster (portrait), for the rows below the first
         boolean detailed;
         // Your own servers ("jellyfin" and "anime" kinds): the Jellyfin item to open in Wholphin (null: not in the
         // library), and the image: a path on the Jellyfin server or a full https address (Hikari's AniList covers)
         String itemId, itemType, seriesId, seasonId, image;
         int season = -1, episode = -1;
-        // Anime: the group the card is in (Hikari.WATCHING...), and the episode OK plays (null: opens the show)
+        // The row the title belongs to (TRENDING, NEW, EVERYWHERE; Hikari.WATCHING...), and the episode OK plays
+        // (anime you're watching; null: opens the show)
         String section, playId;
         long positionMs;
     }
@@ -58,9 +60,10 @@ final class Recs {
 
     private static final String API = "https://api.themoviedb.org/3";
     private static final String IMAGES = "https://image.tmdb.org/t/p/original";
+    private static final String IMAGES_SMALL = "https://image.tmdb.org/t/p/w780", IMAGES_POSTER = "https://image.tmdb.org/t/p/w500";
     private static final long LIST_EVERY = 6 * 3600_000L;
     /** Bump when what is saved for each title changes (the saved list is discarded and fetched again). */
-    private static final int CACHE_VERSION = 3;
+    private static final int CACHE_VERSION = 5;
     private static final int MANHA = 0, TARDE = 1, NOITE = 2;
     static final String[] PERIOD_LABEL = {"PARA ESTA MANHÃ", "PARA ESTA TARDE", "PARA ESTA NOITE"};
     static final String[] PERIOD_LABEL_EN = {"THIS MORNING", "THIS AFTERNOON", "TONIGHT"};
@@ -122,8 +125,18 @@ final class Recs {
     private final java.util.Set<String> ownFetching = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
     private interface Fetch { List<Pick> run(int max) throws Exception; }
-    /** Most cards one of your own lists can have (the home screen shows up to 12 per tab). */
+    /** Most cards in a row (the home screen's first row and each row below it). */
     static final int MAX_OWN = 12;
+    /** TMDB rows: trending on your apps, new on your apps, and trending but on none of them (Jellyfin or Jellyseerr). */
+    static final String TRENDING = "trending", NEW = "new", EVERYWHERE = "everywhere";
+    /** Poster size for the rows below the first (the focused size, so it stays sharp). */
+    static final int POSTER_W = 268, POSTER_H = 402;
+    private final ExecutorService posterIo = Executors.newSingleThreadExecutor();
+    private final Map<String, Bitmap> posters = new LinkedHashMap<>(64, 0.75f, true);   // least recently drawn first
+    private final java.util.Set<String> posterPending = new java.util.HashSet<>();
+    /** Your Jellyfin library by TMDB id ("movie:603", "tv:1399" → "item id/Movie"), for opening titles in Wholphin. */
+    private volatile Map<String, String> library = new HashMap<>();
+    private volatile long libraryAt;
 
     private Recs(Context c) {
         context = c;
@@ -196,9 +209,14 @@ final class Recs {
             // Without Wholphin, "Continue" has nothing to open; the anime cards still say what's airing.
             boolean on = continueTab ? Jellyfin.configured() && installed(Jellyfin.WHOLPHIN) : Hikari.configured();
             List<Pick> all = own.get(kind);
-            // The anime tab sizes its own groups (Hikari.fetch); Continue follows Home Settings.
-            int n = anime ? MAX_OWN : Prefs.cards();
-            if (on && all != null) list.addAll(all.subList(0, Math.min(all.size(), n)));
+            if (!on || all == null) return list;
+            if (continueTab) {
+                list.addAll(all.subList(0, Math.min(all.size(), Prefs.cards())));
+                return list;
+            }
+            // Anime: the first row is what you're watching; with nothing started, the first group there is.
+            String first = all.isEmpty() ? null : all.get(0).section;
+            for (Pick p : all) if (first != null && first.equals(p.section) && list.size() < Prefs.cards()) list.add(p);
             return list;
         }
         if (!hasKey(context)) return list;    // no TMDB key: no recommendations
@@ -227,6 +245,135 @@ final class Recs {
         int cut = t.indexOf(':');
         if (cut < 0) cut = t.indexOf(" - ");
         return (cut > 0 ? t.substring(0, cut) : t).trim();
+    }
+
+    /**
+     * A row below the first: the titles of `section` (of `kind`; null = movies and shows), without the ones in `skip`.
+     * TMDB's: only what an app on the TV streams, except EVERYWHERE (what none of them has). Anime: Hikari's group.
+     */
+    List<Pick> row(String kind, String section, List<Pick> skip) {
+        java.util.Set<String> shown = new java.util.HashSet<>();
+        for (Pick p : skip) shown.add(key(p));
+        List<Pick> out = new ArrayList<>();
+        boolean anime = Hikari.KIND.equals(kind);
+        List<Pick> from = anime ? own.get(Hikari.KIND) : picks;
+        if (from == null || (anime && !Hikari.configured()) || (!anime && !hasKey(context))) return out;
+        Map<String, Boolean> have = new HashMap<>();
+        for (Pick p : from) {
+            if (out.size() >= MAX_OWN) break;
+            if (!section.equals(p.section) || shown.contains(key(p)) || (!anime && kind != null && !kind.equals(p.kind))) continue;
+            if (!anime && !p.detailed) continue;
+            boolean streams = p.pkg != null && have.computeIfAbsent(p.pkg, this::installed);
+            if (!anime && (EVERYWHERE.equals(section) ? streams : !streams)) continue;
+            out.add(p);
+        }
+        return out;
+    }
+
+    /** The Jellyfin item for a TMDB title (movie or show) if it's in your library, else null. */
+    String libraryItem(Pick p) {
+        if (p == null || p.itemId != null || !("movie".equals(p.kind) || "tv".equals(p.kind))) return null;
+        return library.get(p.kind + ":" + p.id);
+    }
+
+    /** Your library by TMDB id, every 10 minutes (the "In your library" check costs nothing on the UI thread). */
+    private void refreshLibrary() {
+        long now = System.currentTimeMillis();
+        if (!Jellyfin.configured() || (now - libraryAt < 10 * 60_000L && now >= libraryAt)) return;
+        libraryAt = now;
+        posterIo.execute(() -> {
+            try {
+                Map<String, String> map = new HashMap<>();
+                for (String[] item : Jellyfin.library()) {
+                    if (!item[7].isEmpty()) {
+                        map.put(("Movie".equals(item[8]) ? "movie:" : "tv:") + item[7], item[0] + "/" + item[8]);
+                    }
+                }
+                library = map;
+            } catch (Exception e) {
+                AppLog.w("jellyfin library: " + e.getMessage());
+            }
+        });
+    }
+
+    /**
+     * The title's poster for the smaller cards (cut from its image, already at the focused size), or null: loads it in
+     * the background and notifies when ready. The 48 most recently drawn stay in memory (GPU).
+     */
+    Bitmap poster(Pick p) {
+        if (p == null || p.backdrop == null) return null;
+        String key = posterKey(p);
+        synchronized (posters) {
+            Bitmap b = posters.get(key);
+            if (b != null) return b;
+            if (!posterPending.add(key)) return null;
+        }
+        posterIo.execute(() -> {
+            try {
+                File f = posterFile(p);
+                BitmapFactory.Options bounds = new BitmapFactory.Options();
+                bounds.inJustDecodeBounds = true;
+                BitmapFactory.decodeFile(f.getPath(), bounds);
+                BitmapFactory.Options opts = new BitmapFactory.Options();
+                opts.inSampleSize = 1;
+                // Keep at least twice the poster's height before cutting (a 16:9 photo loses its sides).
+                while (bounds.outHeight / (opts.inSampleSize * 2) >= POSTER_H * 2) opts.inSampleSize *= 2;
+                Bitmap src = BitmapFactory.decodeFile(f.getPath(), opts);
+                if (src == null) throw new IOException("unreadable image");
+                float ratio = (float) POSTER_W / POSTER_H;
+                int cw = Math.min(src.getWidth(), Math.round(src.getHeight() * ratio));
+                int ch = Math.min(src.getHeight(), Math.round(cw / ratio));
+                Bitmap cut = Bitmap.createBitmap(src, (src.getWidth() - cw) / 2, (src.getHeight() - ch) / 2, cw, ch);
+                Bitmap out = Bitmap.createScaledBitmap(cut, POSTER_W, POSTER_H, true);
+                if (cut != src && cut != out) cut.recycle();
+                if (src != out) src.recycle();
+                Bitmap gpu = Backdrop.gpu(out);
+                synchronized (posters) {
+                    posters.put(key, gpu);
+                    while (posters.size() > 48) posters.remove(posters.keySet().iterator().next());
+                }
+                notifyListeners();
+            } catch (IOException | RuntimeException | OutOfMemoryError e) {
+                AppLog.w("poster: " + e.getMessage());
+            } finally {
+                synchronized (posters) { posterPending.remove(key); }
+            }
+        });
+        return null;
+    }
+
+    /**
+     * A smaller copy of the title's image for its poster (TMDB's 780-wide, Jellyfin's at 780), in its own folder of
+     * up to 150, so the rows don't push the large images out.
+     */
+    /** TMDB's real poster when it has one, else a cut of the title's image. */
+    private static String posterKey(Pick p) {
+        return p.poster != null ? "poster" + p.poster.replace("/", "") : p.backdrop.replace("/", "");
+    }
+
+    private File posterFile(Pick p) throws IOException {
+        File dir = new File(context.getCacheDir(), "posters");
+        File f = new File(dir, posterKey(p));
+        if (f.exists()) return f;
+        //noinspection ResultOfMethodCallIgnored
+        dir.mkdirs();
+        HttpURLConnection c = p.poster != null ? (HttpURLConnection) new URL(IMAGES_POSTER + p.poster).openConnection()
+                : p.image == null ? (HttpURLConnection) new URL(IMAGES_SMALL + p.backdrop).openConnection()
+                : p.image.startsWith("https://") ? (HttpURLConnection) new URL(p.image).openConnection()
+                : Jellyfin.open(p.image.replace("maxWidth=1920", "maxWidth=780"));
+        c.setConnectTimeout(8000);
+        c.setReadTimeout(20000);
+        File part = new File(f.getPath() + ".part");
+        try (InputStream in = c.getInputStream(); FileOutputStream out = new FileOutputStream(part)) {
+            byte[] buffer = new byte[16384];
+            int n;
+            while ((n = in.read(buffer)) > 0) out.write(buffer, 0, n);
+        } finally {
+            c.disconnect();
+        }
+        if (!part.renameTo(f)) throw new IOException("couldn't save the poster");
+        prune(dir, 150);
+        return f;
     }
 
     /** Name of the service the pick is on ("Netflix"), or empty. */
@@ -266,6 +413,7 @@ final class Recs {
         String user = Prefs.jellyfinUser().toLowerCase(Locale.ROOT) + "/" + Prefs.cards();
         if (Jellyfin.configured()) refreshOwn(Jellyfin.KIND, user, 60_000L, Jellyfin::fetch);
         if (Hikari.configured()) refreshOwn(Hikari.KIND, user, 5 * 60_000L, Hikari::fetch);
+        refreshLibrary();
         if (!hasKey(context) || fetching) return;
         long now = System.currentTimeMillis();
         long stamp = sourceStamp();   // a new key, country or installed streaming-app set refetches
@@ -294,6 +442,14 @@ final class Recs {
                     } catch (Exception e) {
                         failures++;
                         last = e.getMessage() == null ? e.toString() : e.getMessage();
+                    }
+                }
+                // The rows below the first need the details of the rest of the list too (which app streams it).
+                for (Pick pick : picks) {
+                    if (pick.detailed) continue;
+                    try {
+                        fetchDetails(pick);
+                    } catch (Exception ignored) {
                     }
                 }
                 save();
@@ -462,6 +618,7 @@ final class Recs {
         // 1. Trending this week (TMDB goes by what people are watching and searching for right now), only what is
         //    on one of the TV's services: the details say where (and are then ready).
         List<Pick> hotMovies = new ArrayList<>(), hotShows = new ArrayList<>();
+        List<Pick> elseMovies = new ArrayList<>(), elseShows = new ArrayList<>();   // trending, on none of the TV's apps
         for (String kind : new String[] {"movie", "tv"}) {
             JSONArray hot = get("/trending/" + kind + "/week?language=" + lang()).getJSONArray("results");
             List<Pick> candidates = new ArrayList<>();
@@ -472,7 +629,9 @@ final class Recs {
                 } catch (Exception e) {
                     continue;
                 }
-                if (pick.pkg != null) (kind.equals("movie") ? hotMovies : hotShows).add(pick);
+                pick.section = pick.pkg != null ? TRENDING : EVERYWHERE;
+                (pick.pkg != null ? (kind.equals("movie") ? hotMovies : hotShows)
+                        : (kind.equals("movie") ? elseMovies : elseShows)).add(pick);
             }
         }
         // 2. Recent releases on the TV's services: movies from the past year and shows with a new episode in the
@@ -484,6 +643,8 @@ final class Recs {
         List<Pick> newMovies = new ArrayList<>(), newShows = new ArrayList<>();
         for (int i = 0; i < movies.length(); i++) add(newMovies, movies.getJSONObject(i), "movie");
         for (int i = 0; i < shows.length(); i++) add(newShows, shows.getJSONObject(i), "tv");
+        for (Pick pick : newMovies) pick.section = NEW;
+        for (Pick pick : newShows) pick.section = NEW;
         // Trending first, then the new releases; movies and shows alternating, without repeats, up to 24.
         List<Pick> list = new ArrayList<>();
         java.util.Set<String> seen = new java.util.HashSet<>();
@@ -491,6 +652,7 @@ final class Recs {
         alternate(list, seen, hotMovies, hotShows, max);
         alternate(list, seen, newMovies, newShows, max);
         if (list.isEmpty()) throw new IOException("TMDB returned no recommendations");
+        alternate(list, seen, elseMovies, elseShows, list.size() + 2 * MAX_OWN);
         picks = list;
         period = p;
         listAt = System.currentTimeMillis();
@@ -525,6 +687,8 @@ final class Recs {
         p.kind = kind;
         p.title = o.optString(kind.equals("movie") ? "title" : "name");
         p.backdrop = backdrop;
+        String poster = o.optString("poster_path", "");
+        p.poster = poster.isEmpty() || "null".equals(poster) ? null : poster;
         list.add(p);
     }
 
@@ -725,7 +889,8 @@ final class Recs {
             for (Pick p : picks) {
                 a.put(new JSONObject().put("id", p.id).put("kind", p.kind).put("title", p.title).put("backdrop", p.backdrop)
                         .put("meta", p.meta).put("app", p.app == null ? "" : p.app).put("pkg", p.pkg == null ? "" : p.pkg)
-                        .put("detailed", p.detailed));
+                        .put("detailed", p.detailed).put("section", p.section == null ? "" : p.section)
+                        .put("poster", p.poster == null ? "" : p.poster));
             }
             cache.edit().putString("picks", a.toString()).putInt("period", period).putLong("listAt", listAt)
                     .putString("language", listLanguage)
@@ -748,6 +913,8 @@ final class Recs {
             p.app = o.optString("app").isEmpty() ? null : o.optString("app");
             p.pkg = o.optString("pkg").isEmpty() ? null : o.optString("pkg");
             p.detailed = o.optBoolean("detailed");
+            p.section = o.optString("section").isEmpty() ? null : o.optString("section");
+            p.poster = o.optString("poster").isEmpty() ? null : o.optString("poster");
             out.add(p);
         }
         return out;

@@ -116,7 +116,8 @@ final class Jellyfin {
 
     /**
      * The shows and movies on the server, for matching Hikari's anime to them: {id, name, original title, AniList id,
-     * backdrop tag, AniDB id, Shoko series id, TMDB id} (empty strings where missing; Shokofin sets the ids).
+     * backdrop tag, AniDB id, Shoko series id, TMDB id, "Series" or "Movie"} (empty strings where missing; Shokofin
+     * sets the anime ids).
      */
     static List<String[]> library() throws IOException, org.json.JSONException {
         String want = Prefs.jellyfinUser();
@@ -131,7 +132,7 @@ final class Jellyfin {
             if (ids == null) ids = new JSONObject();
             out.add(new String[] {o.optString("Id"), o.optString("Name"), o.optString("OriginalTitle"), ids.optString("AniList"),
                     tags == null || tags.length() == 0 ? "" : tags.optString(0), ids.optString("AniDB"),
-                    ids.optString("Shoko Series"), ids.optString("TheMovieDb")});
+                    ids.optString("Shoko Series"), ids.optString("Tmdb", ids.optString("TheMovieDb")), o.optString("Type")});
         }
         return out;
     }
@@ -146,6 +147,15 @@ final class Jellyfin {
         JSONObject e = items.getJSONObject(0), user = e.optJSONObject("UserData");
         long ticks = user == null ? 0 : user.optLong("PlaybackPositionTicks");
         return new String[] {e.optString("Id"), String.valueOf(ticks / 10_000L)};
+    }
+
+    /** Opens a library item ("id/Series" or "id/Movie", from Recs' library) in Wholphin. */
+    static Intent item(String idAndType) {
+        int cut = idAndType.indexOf('/');
+        Intent i = new Intent().setComponent(new ComponentName(WHOLPHIN, WHOLPHIN + ".MainActivity"))
+                .putExtra("itemId", uuid(idAndType.substring(0, cut))).putExtra("itemType", idAndType.substring(cut + 1));
+        if (userId != null && serverId != null) i.putExtra("serverId", uuid(serverId)).putExtra("userId", uuid(userId));
+        return i;
     }
 
     /** Plays that episode in Wholphin, from `positionMs` (Wholphin's own playback intent). */

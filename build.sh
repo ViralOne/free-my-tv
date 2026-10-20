@@ -64,17 +64,19 @@ final class Config {
     static final String JELLYFIN_USER = "$(prop jellyfin_user '')";
     static final String HIKARI_URL = "$(prop hikari_url '' | sed 's:/*$::')";
     static final String HIKARI_TOKEN = "$(prop hikari_token '')";
+    static final String JELLYSEERR_URL = "$(prop jellyseerr_url '' | sed 's:/*$::')";
+    static final String JELLYSEERR_KEY = "$(prop jellyseerr_key '')";
 }
 EOF
 
-# Plain http only to your Jellyfin and Hikari servers (a home server rarely has https); everything else stays
+# Plain http only to your Jellyfin, Hikari and Jellyseerr servers (a home server rarely has https); everything else stays
 # https-only.
 mkdir -p out/res-gen/xml
 {
   echo '<?xml version="1.0" encoding="utf-8"?>'
   echo '<network-security-config>'
   echo '    <base-config cleartextTrafficPermitted="false" />'
-  for url in "$(prop jellyfin_url '')" "$(prop hikari_url '')"; do
+  for url in "$(prop jellyfin_url '')" "$(prop hikari_url '')" "$(prop jellyseerr_url '')"; do
     [[ "$url" == http://* ]] && printf '%s\n' "$url" | sed -E 's#^[a-zA-Z]+://##; s#[/:].*$##'
   done | sort -u | while read -r host; do     # once each: Android refuses a host listed twice
     [ -n "$host" ] && echo "    <domain-config cleartextTrafficPermitted=\"true\"><domain>$host</domain></domain-config>"
