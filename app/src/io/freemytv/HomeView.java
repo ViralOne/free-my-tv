@@ -166,10 +166,11 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private final Spring pageScroll = new Spring(0.45f, 1f, 0);    // in thousands of 1920-space px
     private boolean rowsDirty;
     private TextPaint rowTitle2;
+    private final TextPaint cardTitlePaint = new TextPaint(Paint.ANTI_ALIAS_FLAG);
     private final List<HomeApps.Item> lightButtons = new ArrayList<>();
     private Paint lTitle, lTab, lTabOn, lCardTitle, lCardMeta, lQuote, lTip, lSection, lRowName, lAction;
     // The title waiting for a second OK to be requested (and when the first OK came), and what sends it
-    private Recs.Pick requestPick;
+    private String requestKey;      // Recs.key: the list can refresh between the two presses
     private java.util.concurrent.Callable<String> requestSend;
     private long requestAt;
     private Shader lightGradient;
@@ -477,6 +478,20 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
 
     @Override public void onRecs() {
         updatePicks();
+    }
+
+    @Override public void onPoster() {
+        rowsDirty = true;
+    }
+
+    /** `text` shortened with "…" to `width`, cached on the pick (slot 0 the title, 1 the details). */
+    private static String fit(Recs.Pick p, int slot, String text, TextPaint paint, float width) {
+        float key = width + paint.getTextSize() * 100_000;
+        if (p.fit[slot] == null || p.fitFor[slot] != key) {
+            p.fit[slot] = TextUtils.ellipsize(text == null ? "" : text, paint, width, TextUtils.TruncateAt.END).toString();
+            p.fitFor[slot] = key;
+        }
+        return p.fit[slot];
     }
 
     private void invalidateAll() {
@@ -1666,6 +1681,15 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         announceForAccessibility(text);
     }
 
+    /** Right away, in place of whatever is showing or waiting (an answer to the OK just pressed). */
+    private void showToastNow(String text) {
+        toasts.clear();
+        toast = null;
+        toastAt = 0;
+        showToast(text);
+        toastLayer.invalidate();
+    }
+
     /** Advances the toast queue; returns true while a toast fades in or out (animation). */
     private boolean tickToast(long up) {
         if (toast != null && up - toastAt > TOAST_MS) {
@@ -2002,25 +2026,35 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
      */
     private void requestTitle(Recs.Pick p) {
         long now = SystemClock.uptimeMillis();
-        boolean confirm = requestPick == p && requestSend != null && now - requestAt < 10_000;
+        String key = Recs.key(p);
+        if (recs.requested(p)) {
+            showToastNow(Ui.tr("Já foi pedido.", "Already requested.", "Ya está pedido."));
+            return;
+        }
+        boolean confirm = key.equals(requestKey) && requestSend != null && now - requestAt < 10_000;
         if (confirm) {
             java.util.concurrent.Callable<String> send = requestSend;
-            requestPick = null;
+            requestKey = null;
             requestSend = null;
             click.open();
+            showToastNow(Ui.tr("Pedindo…", "Requesting…", "Pidiendo…"));
             LOADER.execute(() -> {
                 String text;
                 try {
                     text = send.call();
+                    handler.post(() -> {
+                        recs.markRequested(p);  // the card says "Requested" now, not after the next refresh
+                        rowsDirty = heroDirty = true;
+                    });
                 } catch (Exception e) {
                     text = Ui.tr("Não deu para pedir: ", "Couldn't request it: ", "No se pudo pedir: ") + e.getMessage();
                 }
                 String shown = text;
-                handler.post(() -> showToast(shown));
+                handler.post(() -> showToastNow(shown));
             });
             return;
         }
-        requestPick = p;
+        requestKey = key;
         requestSend = null;
         requestAt = now;
         boolean anime = Hikari.KIND.equals(p.kind);
@@ -2051,10 +2085,10 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             java.util.concurrent.Callable<String> ready = send;
             String shown = text;
             handler.post(() -> {
-                if (requestPick != p) return;   // moved on meanwhile
+                if (!key.equals(requestKey)) return;   // OK on another title meanwhile
                 requestSend = ready;
-                requestAt = SystemClock.uptimeMillis();
-                showToast(shown);
+                requestAt = SystemClock.uptimeMillis();     // the 10 s start when you can read the question
+                showToastNow(shown);
             });
         });
     }
@@ -2302,12 +2336,14 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             if (Seerr.configured() || Jellyfin.configured()) sections.add(Recs.EVERYWHERE);
         }
         int n = 0;
+        boolean changed = false;
         for (String sec : sections) {
             if (n >= MAX_ROWS) break;
             List<Recs.Pick> list = recs.row(kind, sec, cards);
             if (list.isEmpty()) continue;
             Row row = rowSlots[n];
             if (!sec.equals(row.section) || !samePicks(list, row.picks)) {
+                changed = true;
                 if (!sec.equals(row.section)) {
                     row.index = 0;
                     row.scroll.snap(0);
@@ -2320,9 +2356,12 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             n++;
         }
         for (int i = n; i < MAX_ROWS; i++) {
+            if (rowSlots[i].section == null) continue;
             rowSlots[i].section = null;
             rowSlots[i].picks = new ArrayList<>();
+            changed = true;
         }
+        if (!changed && n == rowCount) return;     // nothing new: no relayout, no redraw
         rowCount = n;
         if (zone == Z_ROWS && rowIndex >= rowCount) {
             zone = rowCount > 0 ? Z_ROWS : Z_CARDS;
@@ -2396,6 +2435,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     /** What OK does on a card, under its title: "Wholphin", "Netflix", "Request"... */
     private String actionLabel(Recs.Pick p) {
         if (recs.libraryItem(p) != null || (p.itemId != null && p.pkg != null)) return "Wholphin";
+        if (recs.requested(p)) return Ui.tr("Pedido", "Requested", "Pedido");
         if (p.pkg != null) return Recs.serviceName(p);
         if (Hikari.KIND.equals(p.kind) || Seerr.configured()) return Ui.tr("Pedir", "Request", "Pedir");
         return "";
@@ -2451,7 +2491,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             c.drawRoundRect(cell, r, r, rim);
         }
         float y = base.bottom + (40 + 10 * f) * k;
-        c.drawText(TextUtils.ellipsize(p.title, rowTitle2, bw, TextUtils.TruncateAt.END).toString(), base.left, y, rowTitle2);
+        c.drawText(fit(p, 0, p.title, rowTitle2, bw), base.left, y, rowTitle2);
         String action = actionLabel(p);
         if (!action.isEmpty()) c.drawText(action, base.left, y + 33 * k, lAction);
     }
@@ -2596,11 +2636,11 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             c.drawRoundRect(cell, r, r, rim);
         }
         if (p == null) return;
-        TextPaint tp = new TextPaint(lCardTitle);
-        c.drawText(TextUtils.ellipsize(p.title, tp, bw, TextUtils.TruncateAt.END).toString(), base.left, base.bottom + 46 * k, lCardTitle);
+        cardTitlePaint.set(lCardTitle);
+        c.drawText(fit(p, 0, p.title, cardTitlePaint, bw), base.left, base.bottom + 46 * k, lCardTitle);
         if (i == 0 && p.meta != null && !p.meta.isEmpty()) {
-            TextPaint mp = new TextPaint(lCardMeta);
-            c.drawText(TextUtils.ellipsize(p.meta, mp, bw, TextUtils.TruncateAt.END).toString(), base.left, base.bottom + 80 * k, lCardMeta);
+            cardTitlePaint.set(lCardMeta);
+            c.drawText(fit(p, 1, p.meta, cardTitlePaint, bw), base.left, base.bottom + 80 * k, lCardMeta);
         }
     }
 

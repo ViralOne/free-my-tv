@@ -6,6 +6,7 @@ import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -45,6 +46,9 @@ final class Recs {
         String kind;            // "movie" or "tv"
         String title, backdrop, meta = "", app, pkg;
         String poster;          // TMDB's poster (portrait), for the rows below the first
+        // The title and details shortened to fit a card, cached (shortening on every frame of a scroll made it stutter)
+        final String[] fit = new String[2];
+        final float[] fitFor = new float[2];
         boolean detailed;
         // Your own servers ("jellyfin" and "anime" kinds): the Jellyfin item to open in Wholphin (null: not in the
         // library), and the image: a path on the Jellyfin server or a full https address (Hikari's AniList covers)
@@ -56,7 +60,11 @@ final class Recs {
         long positionMs;
     }
 
-    interface Listener { void onRecs(); }
+    interface Listener {
+        void onRecs();
+        /** A poster finished loading: only the rows need redrawing (the lists didn't change). */
+        default void onPoster() { onRecs(); }
+    }
 
     private static final String API = "https://api.themoviedb.org/3";
     private static final String IMAGES = "https://image.tmdb.org/t/p/original";
@@ -131,6 +139,8 @@ final class Recs {
     static final String TRENDING = "trending", NEW = "new", EVERYWHERE = "everywhere";
     /** Poster size for the rows below the first (the focused size, so it stays sharp). */
     static final int POSTER_W = 268, POSTER_H = 402;
+    /** Posters kept ready (GPU, ~430 KB each): the ~24 that fit on screen, plus the next few. */
+    private static final int MAX_POSTERS = 32;
     private final ExecutorService posterIo = Executors.newSingleThreadExecutor();
     private final Map<String, Bitmap> posters = new LinkedHashMap<>(64, 0.75f, true);   // least recently drawn first
     private final java.util.Set<String> posterPending = new java.util.HashSet<>();
@@ -270,6 +280,19 @@ final class Recs {
         return out;
     }
 
+    /** Titles requested from the TV, by Recs.key, with when (kept a week, until the server's lists catch up). */
+    boolean requested(Pick p) {
+        long at = cache.getLong("requested:" + key(p), 0);
+        return at != 0 && System.currentTimeMillis() - at < 7 * 24 * 3600_000L;
+    }
+
+    /** After a request: remembered, and Hikari's list fetched again soon (it shows the request's state). */
+    void markRequested(Pick p) {
+        cache.edit().putLong("requested:" + key(p), System.currentTimeMillis()).apply();
+        if (Hikari.KIND.equals(p.kind)) ownAt.remove(Hikari.KIND);
+        notifyListeners();
+    }
+
     /** The Jellyfin item for a TMDB title (movie or show) if it's in your library, else null. */
     String libraryItem(Pick p) {
         if (p == null || p.itemId != null || !("movie".equals(p.kind) || "tv".equals(p.kind))) return null;
@@ -298,7 +321,7 @@ final class Recs {
 
     /**
      * The title's poster for the smaller cards (cut from its image, already at the focused size), or null: loads it in
-     * the background and notifies when ready. The 48 most recently drawn stay in memory (GPU).
+     * the background and notifies when ready. The MAX_POSTERS most recently drawn stay in memory (GPU).
      */
     Bitmap poster(Pick p) {
         if (p == null || p.backdrop == null) return null;
@@ -330,9 +353,9 @@ final class Recs {
                 Bitmap gpu = Backdrop.gpu(out);
                 synchronized (posters) {
                     posters.put(key, gpu);
-                    while (posters.size() > 48) posters.remove(posters.keySet().iterator().next());
+                    while (posters.size() > MAX_POSTERS) posters.remove(posters.keySet().iterator().next());
                 }
-                notifyListeners();
+                main.post(() -> { for (Listener l : new ArrayList<>(listeners)) l.onPoster(); });
             } catch (IOException | RuntimeException | OutOfMemoryError e) {
                 AppLog.w("poster: " + e.getMessage());
             } finally {
@@ -776,8 +799,16 @@ final class Recs {
         return null;
     }
 
+    /** Whether the app is on the TV, asked of Android at most every 30 s per app (the rows ask often). */
+    private final Map<String, long[]> installedAt = new java.util.concurrent.ConcurrentHashMap<>();
+
     private boolean installed(String pkg) {
-        return HomeApps.launchIntent(context.getPackageManager(), pkg) != null;
+        long now = SystemClock.uptimeMillis();
+        long[] seen = installedAt.get(pkg);
+        if (seen != null && now - seen[1] < 30_000) return seen[0] == 1;
+        boolean yes = HomeApps.launchIntent(context.getPackageManager(), pkg) != null;
+        installedAt.put(pkg, new long[] {yes ? 1 : 0, now});
+        return yes;
     }
 
     private long sourceStamp() {
@@ -858,8 +889,9 @@ final class Recs {
             synchronized (images) {
                 images.put(p.backdrop, backdrop);
                 // The light design keeps every tab's cards (three per tab) ready, the "Continue" tab's too.
-                // The current tab's cards (up to 12 on the anime tab) and its neighbors' first three.
-                int max = forLight ? Math.max(Prefs.cards(), MAX_OWN) + 7 : 4;
+                // The current tab's first-row cards and its neighbors' first three (each ~1.3 MB of blurred copies on
+                // the Java heap besides the GPU images: the TV has little memory to spare).
+                int max = forLight ? Prefs.cards() + 7 : 4;
                 while (images.size() > max) images.remove(images.keySet().iterator().next());
             }
             notifyListeners();
