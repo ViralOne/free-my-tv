@@ -114,6 +114,48 @@ final class Jellyfin {
         return null;
     }
 
+    /**
+     * The shows and movies on the server, for matching Hikari's anime to them: {id, name, original title, AniList id,
+     * backdrop tag, AniDB id, Shoko series id, TMDB id} (empty strings where missing; Shokofin sets the ids).
+     */
+    static List<String[]> library() throws IOException, org.json.JSONException {
+        String want = Prefs.jellyfinUser();
+        if (userId == null || !want.equalsIgnoreCase(userName)) findUser(want);
+        JSONArray items = get("/Items?userId=" + userId + "&includeItemTypes=Series,Movie&recursive=true"
+                + "&fields=ProviderIds,OriginalTitle&enableImageTypes=Backdrop&imageTypeLimit=1").getJSONArray("Items");
+        List<String[]> out = new ArrayList<>();
+        for (int i = 0; i < items.length(); i++) {
+            JSONObject o = items.getJSONObject(i);
+            JSONObject ids = o.optJSONObject("ProviderIds");
+            JSONArray tags = o.optJSONArray("BackdropImageTags");
+            if (ids == null) ids = new JSONObject();
+            out.add(new String[] {o.optString("Id"), o.optString("Name"), o.optString("OriginalTitle"), ids.optString("AniList"),
+                    tags == null || tags.length() == 0 ? "" : tags.optString(0), ids.optString("AniDB"),
+                    ids.optString("Shoko Series"), ids.optString("TheMovieDb")});
+        }
+        return out;
+    }
+
+    /** The episode to play next in a show and where to resume it (ms): {episode id, position}, or null. */
+    static String[] nextEpisode(String seriesId) throws IOException, org.json.JSONException {
+        String want = Prefs.jellyfinUser();
+        if (userId == null || !want.equalsIgnoreCase(userName)) findUser(want);
+        JSONArray items = get("/Shows/NextUp?userId=" + userId + "&seriesId=" + seriesId + "&limit=1&enableResumable=true")
+                .getJSONArray("Items");
+        if (items.length() == 0) return null;
+        JSONObject e = items.getJSONObject(0), user = e.optJSONObject("UserData");
+        long ticks = user == null ? 0 : user.optLong("PlaybackPositionTicks");
+        return new String[] {e.optString("Id"), String.valueOf(ticks / 10_000L)};
+    }
+
+    /** Plays that episode in Wholphin, from `positionMs` (Wholphin's own playback intent). */
+    static Intent play(Recs.Pick p) {
+        Intent i = new Intent(WHOLPHIN + ".PLAYBACK").setComponent(new ComponentName(WHOLPHIN, WHOLPHIN + ".MainActivity"))
+                .putExtra("itemId", uuid(p.playId)).putExtra("position", p.positionMs);
+        if (userId != null && serverId != null) i.putExtra("serverId", uuid(serverId)).putExtra("userId", uuid(userId));
+        return i;
+    }
+
     /** Opens the title in Wholphin, signed in as the same user (Wholphin switches to it if needed). */
     static Intent intent(Recs.Pick p) {
         Intent i = new Intent().setComponent(new ComponentName(WHOLPHIN, WHOLPHIN + ".MainActivity"))
@@ -204,15 +246,17 @@ final class Jellyfin {
         return out.toString(StandardCharsets.UTF_8.name());
     }
 
-    // MARK: - Saved list (shown right away on a cold start, before the server answers)
+    // MARK: - Saved list (shown right away on a cold start, before the server answers; Hikari's too)
 
     static JSONArray save(List<Recs.Pick> list) throws org.json.JSONException {
         JSONArray a = new JSONArray();
         for (Recs.Pick p : list) {
-            a.put(new JSONObject().put("itemId", p.itemId).put("itemType", p.itemType).put("title", p.title)
+            a.put(new JSONObject().put("kind", p.kind).put("id", p.id).put("pkg", p.pkg == null ? "" : p.pkg)
+                    .put("itemId", p.itemId == null ? "" : p.itemId).put("itemType", p.itemType).put("title", p.title)
                     .put("meta", p.meta).put("backdrop", p.backdrop).put("image", p.image)
                     .put("seriesId", p.seriesId == null ? "" : p.seriesId).put("seasonId", p.seasonId == null ? "" : p.seasonId)
-                    .put("season", p.season).put("episode", p.episode));
+                    .put("season", p.season).put("episode", p.episode).put("section", p.section == null ? "" : p.section)
+                    .put("playId", p.playId == null ? "" : p.playId).put("positionMs", p.positionMs));
         }
         return a;
     }
@@ -223,12 +267,12 @@ final class Jellyfin {
             JSONObject o = a.optJSONObject(i);
             if (o == null) continue;
             Recs.Pick p = new Recs.Pick();
-            p.kind = KIND;
-            p.app = KIND;
-            p.pkg = WHOLPHIN;
+            p.kind = o.optString("kind", KIND);
+            p.pkg = o.has("pkg") ? (o.optString("pkg").isEmpty() ? null : o.optString("pkg")) : WHOLPHIN;
+            p.app = p.pkg == null ? null : KIND;
             p.detailed = true;
-            p.itemId = o.optString("itemId");
-            p.id = p.itemId.hashCode();
+            p.itemId = o.optString("itemId").isEmpty() ? null : o.optString("itemId");
+            p.id = o.has("id") ? o.optInt("id") : p.itemId.hashCode();
             p.itemType = o.optString("itemType");
             p.title = o.optString("title");
             p.meta = o.optString("meta");
@@ -238,6 +282,9 @@ final class Jellyfin {
             p.seasonId = o.optString("seasonId").isEmpty() ? null : o.optString("seasonId");
             p.season = o.optInt("season", -1);
             p.episode = o.optInt("episode", -1);
+            p.section = o.optString("section").isEmpty() ? null : o.optString("section");
+            p.playId = o.optString("playId").isEmpty() ? null : o.optString("playId");
+            p.positionMs = o.optLong("positionMs");
             out.add(p);
         }
         return out;

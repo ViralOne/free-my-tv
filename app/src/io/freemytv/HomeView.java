@@ -87,12 +87,12 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private static final float L_TALL_W = 320, L_CARD_GAP = 40, L_BUTTON = 68, L_BUTTON_GAP = 20, L_BUTTON_CY = 103;
     private static final float L_PLATTER_TOP = 814, L_TILE_H = 126;
     private static final int L_INK = 0xFF1D1D1F, L_DIM = 0xFF6E6E73, L_FAINT = 0xFF8E8E93;
-    // The "Continue" tab (Jellyfin) only when a server is set up in config.properties.
-    private static final boolean CONTINUE = Jellyfin.configured();
-    private static final String[] TABS = tabList("Continuar", "Explorar", "Filmes", "Séries");
-    private static final String[] TABS_EN = tabList("Continue", "Explore", "Movies", "Shows");
-    private static final String[] TABS_ES = tabList("Seguir viendo", "Explorar", "Películas", "Series");
-    private static final String[] TAB_KIND = tabList(Jellyfin.KIND, null, "movie", "tv");
+    // "Continue" (Jellyfin) and "Anime" (Hikari) only when their server is set up in config.properties.
+    private static final boolean CONTINUE = Jellyfin.configured(), ANIME = Hikari.configured();
+    private static final String[] TABS = tabList("Continuar", "Explorar", "Anime", "Filmes", "Séries");
+    private static final String[] TABS_EN = tabList("Continue", "Explore", "Anime", "Movies", "Shows");
+    private static final String[] TABS_ES = tabList("Seguir viendo", "Explorar", "Anime", "Películas", "Series");
+    private static final String[] TAB_KIND = tabList(Jellyfin.KIND, null, Hikari.KIND, "movie", "tv");
     private static final int TAB_COUNT = TAB_KIND.length;
     /** Most cards a tab can have (Home Settings: 3, 6, 9 or 12); past the third, the row scrolls. */
     private static final int MAX_CARDS = 12;
@@ -139,7 +139,11 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private final RectF[] cardRects = new RectF[MAX_CARDS], cardBase = new RectF[MAX_CARDS];
     private final Spring cardScroll = new Spring(0.4f, 1f, 0);
     private final List<HomeApps.Item> lightButtons = new ArrayList<>();
-    private Paint lTitle, lTab, lTabOn, lCardTitle, lCardMeta, lQuote, lTip;
+    private Paint lTitle, lTab, lTabOn, lCardTitle, lCardMeta, lQuote, lTip, lSection;
+    // Anime: the title waiting for a second OK to be requested (and when the first OK came), and its plan
+    private Recs.Pick requestPick;
+    private Hikari.Plan requestPlan;
+    private long requestAt;
     private Shader lightGradient;
 
     // Shelf
@@ -419,9 +423,11 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         return Ui.es ? TABS_ES : Ui.en ? TABS_EN : TABS;
     }
 
-    /** The tabs in order, without the first ("Continue") when there's no Jellyfin server. */
+    /** The tabs in order (Continue, Explore, Anime, Movies, Shows), without the ones whose server isn't set up. */
     private static String[] tabList(String... all) {
-        return CONTINUE ? all : java.util.Arrays.copyOfRange(all, 1, all.length);
+        List<String> out = new ArrayList<>();
+        for (int i = 0; i < all.length; i++) if ((i != 0 || CONTINUE) && (i != 2 || ANIME)) out.add(all[i]);
+        return out.toArray(new String[0]);
     }
 
     /** "Continue" when it has something, else "Explore". */
@@ -523,6 +529,8 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         lCardTitle = Ui.text(Ui.semibold, 31 * k, L_INK);
         lCardTitle.setLetterSpacing(0.012f);
         lCardMeta = Ui.text(Ui.medium, 25 * k, L_DIM);
+        lSection = Ui.text(Ui.semibold, 19 * k, L_DIM);
+        lSection.setLetterSpacing(0.08f);
         lQuote = Ui.numbers(Ui.regular, 21 * k, L_FAINT);
         lTip = Ui.text(Ui.semibold, 25 * k, L_INK);
         lTip.setTextAlign(Paint.Align.CENTER);
@@ -871,6 +879,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         lTabOn.setColor(tone(L_INK, WHITE));
         lCardTitle.setColor(tone(L_INK, WHITE));
         lCardMeta.setColor(tone(L_DIM, 0xFF98989D));
+        lSection.setColor(tone(L_DIM, 0xFF98989D));
         lQuote.setColor(tone(L_FAINT, 0xB8FFFFFF));
         lTip.setColor(tone(L_INK, WHITE));
         staleQuote.setColor(tone(L_FAINT, 0x99FFFFFF));
@@ -1865,9 +1874,15 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             r = topRects[topIndex];
         } else if (zone == Z_CARDS) {
             Recs.Pick p = cardIndex < cards.size() ? cards.get(cardIndex) : null;
+            if (p != null && p.pkg == null && Hikari.KIND.equals(p.kind)) {
+                requestAnime(p);
+                return;
+            }
             if (p == null || p.pkg == null) return;
             it = HomeApps.app(p.pkg, Recs.serviceName(p));
-            if (Jellyfin.KIND.equals(p.kind)) it.intent = Jellyfin.intent(p);
+            // Continue and Anime: that title in Wholphin; an anime you're watching plays its next episode.
+            if (p.playId != null) it.intent = Jellyfin.play(p);
+            else if (p.itemId != null) it.intent = Jellyfin.intent(p);
             r = cardRects[cardIndex];
         } else {
             if (shelf.isEmpty()) return;
@@ -1893,6 +1908,55 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         boolean opened = HomeApps.open(activity, it, this, Math.round(r.left), Math.round(r.top),
                 Math.round(r.width()), Math.round(r.height()));
         if (!opened) showToast(Ui.tr("Não deu para abrir ", "Couldn't open ") + it.label + ".");
+    }
+
+    /**
+     * An anime that isn't in your library: the first OK asks Hikari what it would request and says so; a second OK
+     * on the same card within 10 s sends it (it starts a download, so never on one press).
+     */
+    private void requestAnime(Recs.Pick p) {
+        long now = SystemClock.uptimeMillis();
+        boolean confirm = requestPick == p && requestPlan != null && now - requestAt < 10_000;
+        if (confirm) {
+            Hikari.Plan plan = requestPlan;
+            requestPick = null;
+            requestPlan = null;
+            click.open();
+            LOADER.execute(() -> {
+                String text;
+                try {
+                    text = Hikari.request(plan);
+                } catch (Exception e) {
+                    text = Ui.tr("Não deu para pedir: ", "Couldn't request it: ", "No se pudo pedir: ") + e.getMessage();
+                }
+                String shown = text;
+                handler.post(() -> showToast(shown));
+            });
+            return;
+        }
+        requestPick = p;
+        requestPlan = null;
+        requestAt = now;
+        LOADER.execute(() -> {
+            Hikari.Plan plan = null;
+            String text;
+            try {
+                plan = Hikari.plan(p);
+                text = plan.body == null ? plan.why
+                        : Ui.tr("Pedir ", "Request ", "¿Pedir ") + plan.what
+                        + Ui.tr("? Aperte OK de novo.", "? Press OK again.", "? Pulsa OK otra vez.");
+            } catch (Exception e) {
+                text = Ui.tr("O Hikari não respondeu: ", "Hikari didn't answer: ", "Hikari no respondió: ") + e.getMessage();
+            }
+            Hikari.Plan ready = plan;
+            String shown = text;
+            handler.post(() -> {
+                if (requestPick != p) return;   // moved on meanwhile
+                requestPlan = ready != null && ready.body != null ? ready : null;
+                requestAt = SystemClock.uptimeMillis();
+                showToast(shown);
+            });
+        });
     }
 
     // MARK: - TalkBack: every reachable item as a virtual node (Spoken). Id = group * 1000 + index + 1.
@@ -2111,9 +2175,9 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
                 retarget(false);
             }
         }
-        // Every card of this tab and the first three of the others ready: switching tabs is instant. (Recs keeps that
-        // many in memory; asking for more would push out the ones on screen.)
-        for (int t = 0; t < TAB_COUNT; t++) {
+        // Every card of this tab and the first three of the tabs next to it ready: moving to a tab is instant. (Recs
+        // keeps that many in memory; asking for more would push out the ones on screen.)
+        for (int t = Math.max(0, tab - 1); t <= Math.min(TAB_COUNT - 1, tab + 1); t++) {
             List<Recs.Pick> l = t == tab ? cards : recs.now(TAB_KIND[t]);
             for (int i = 0; i < Math.min(l.size(), t == tab ? MAX_CARDS : 3); i++) recs.backdrop(l.get(i));
         }
@@ -2203,6 +2267,15 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         for (int i = 0; i < shown; i++) if (cardFocus[i].value > 0.02f && (top < 0 || cardFocus[i].value > cardFocus[top].value)) top = i;
         for (int i = 0; i < shown; i++) if (i != top) drawLightCard(c, i);
         if (top >= 0) drawLightCard(c, top);
+        // Anime: each group's name above its first card, raised as that card grows and rises with focus.
+        for (int i = 0; i < Math.min(shown, cards.size()); i++) {
+            String section = cards.get(i).section;
+            if (section == null || (i > 0 && section.equals(cards.get(i - 1).section))) continue;
+            RectF r = cardRects[i];
+            if (r.right < 0 || r.left > w) continue;
+            float lift = (6 + 0.025f * L_CARD_H) * k * cardFocus[i].value;
+            c.drawText(Hikari.sectionLabel(section), r.left, r.top - 14 * k - lift, lSection);
+        }
         if (HomeData.coinCount() > 0) drawQuotes(c);
     }
 

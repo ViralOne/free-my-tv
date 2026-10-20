@@ -56,10 +56,13 @@ final class Backdrop {
         float scale = Math.max((float) W / src.getWidth(), (float) H / src.getHeight());
         float sw = src.getWidth() * scale, sh = src.getHeight() * scale;
         c.drawBitmap(src, null, new RectF((W - sw) / 2, (H - sh) / 2, (W + sw) / 2, (H + sh) / 2), photo);
+        // A poster (taller than wide, like an anime cover) makes the tall card on its own: cut from the 16:9 canvas it
+        // would lose most of the picture and be blurry.
+        Bitmap poster = forLight && src.getHeight() > src.getWidth() ? card(src, TALL_W, TALL_H) : null;
         src.recycle();
         if (forLight) {
             // Light design: everything comes from the photo without scrims.
-            Bitmap wide = card(out, WIDE_W, WIDE_H), tall = card(out, TALL_W, TALL_H);
+            Bitmap wide = card(out, WIDE_W, WIDE_H), tall = poster != null ? poster : card(out, TALL_W, TALL_H);
             int[] frost = reduce(out, FW, FH, 3, 3);
             int[] light = whiten(frost.clone(), 0.82f);
             int[] glass = reduce(out, GW, GH, 2, 2);

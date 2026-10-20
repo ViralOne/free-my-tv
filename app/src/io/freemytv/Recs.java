@@ -45,9 +45,13 @@ final class Recs {
         String kind;            // "movie" or "tv"
         String title, backdrop, meta = "", app, pkg;
         boolean detailed;
-        // Jellyfin ("jellyfin" kind): the item to open in Wholphin, and its image's path on the server
+        // Your own servers ("jellyfin" and "anime" kinds): the Jellyfin item to open in Wholphin (null: not in the
+        // library), and the image: a path on the Jellyfin server or a full https address (Hikari's AniList covers)
         String itemId, itemType, seriesId, seasonId, image;
         int season = -1, episode = -1;
+        // Anime: the group the card is in (Hikari.WATCHING...), and the episode OK plays (null: opens the show)
+        String section, playId;
+        long positionMs;
     }
 
     interface Listener { void onRecs(); }
@@ -111,10 +115,15 @@ final class Recs {
     private volatile boolean light;     // light design: builds only the cards (all three tabs' cards fit in memory)
     private volatile long failedAt, keyStamp;
     private volatile String listLanguage = "";   // language used for the saved titles, genres and texts
-    private volatile List<Pick> jellyfin = new ArrayList<>();
-    private volatile long jellyfinAt;
-    private volatile String jellyfinFor = "";   // user and card count the list was fetched for
-    private volatile boolean jellyfinFetching;
+    /** Lists from your own servers, by kind (Jellyfin's "Continue", Hikari's anime), each refreshed on its own. */
+    private final Map<String, List<Pick>> own = new java.util.concurrent.ConcurrentHashMap<>();
+    private final Map<String, Long> ownAt = new java.util.concurrent.ConcurrentHashMap<>();
+    private final Map<String, String> ownFor = new java.util.concurrent.ConcurrentHashMap<>();  // what it was fetched for
+    private final java.util.Set<String> ownFetching = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+    private interface Fetch { List<Pick> run(int max) throws Exception; }
+    /** Most cards one of your own lists can have (the home screen shows up to 12 per tab). */
+    static final int MAX_OWN = 12;
 
     private Recs(Context c) {
         context = c;
@@ -127,8 +136,10 @@ final class Recs {
             listAt = cache.getLong("listAt", 0);
             listLanguage = cache.getString("language", cache.getBoolean("english", false) ? "en" : "pt");
             keyStamp = cache.getLong("keyStamp", 0);
-            String shows = cache.getString("jellyfin", null);
-            if (shows != null && Jellyfin.configured()) jellyfin = Jellyfin.parse(new JSONArray(shows));
+            for (String kind : new String[] {Jellyfin.KIND, Hikari.KIND}) {
+                String list = cache.getString(kind, null);
+                if (list != null) own.put(kind, Jellyfin.parse(new JSONArray(list)));
+            }
         } catch (Exception ignored) {
         }
     }
@@ -180,11 +191,14 @@ final class Recs {
     /** This hour's 3, movies only ("movie") or shows only ("tv"); null = both (the home screen tabs). */
     List<Pick> now(String kind) {
         List<Pick> list = new ArrayList<>();
-        if (Jellyfin.KIND.equals(kind)) {
-            if (Jellyfin.configured() && installed(Jellyfin.WHOLPHIN)) {
-                List<Pick> all = jellyfin;
-                list.addAll(all.subList(0, Math.min(all.size(), Prefs.cards())));
-            }
+        boolean continueTab = Jellyfin.KIND.equals(kind), anime = Hikari.KIND.equals(kind);
+        if (continueTab || anime) {
+            // Without Wholphin, "Continue" has nothing to open; the anime cards still say what's airing.
+            boolean on = continueTab ? Jellyfin.configured() && installed(Jellyfin.WHOLPHIN) : Hikari.configured();
+            List<Pick> all = own.get(kind);
+            // The anime tab sizes its own groups (Hikari.fetch); Continue follows Home Settings.
+            int n = anime ? MAX_OWN : Prefs.cards();
+            if (on && all != null) list.addAll(all.subList(0, Math.min(all.size(), n)));
             return list;
         }
         if (!hasKey(context)) return list;    // no TMDB key: no recommendations
@@ -249,7 +263,9 @@ final class Recs {
 
     /** With a key: fetches the list if stale or the time of day (morning/afternoon/night) changed; then the details. */
     void refreshIfStale() {
-        refreshJellyfin();
+        String user = Prefs.jellyfinUser().toLowerCase(Locale.ROOT) + "/" + Prefs.cards();
+        if (Jellyfin.configured()) refreshOwn(Jellyfin.KIND, user, 60_000L, Jellyfin::fetch);
+        if (Hikari.configured()) refreshOwn(Hikari.KIND, user, 5 * 60_000L, Hikari::fetch);
         if (!hasKey(context) || fetching) return;
         long now = System.currentTimeMillis();
         long stamp = sourceStamp();   // a new key, country or installed streaming-app set refetches
@@ -296,33 +312,34 @@ final class Recs {
         });
     }
 
-    /** The "Continue" tab's list, at most once a minute (it changes as you watch), and right away for another user. */
-    private void refreshJellyfin() {
-        long now = System.currentTimeMillis();
-        if (!Jellyfin.configured() || jellyfinFetching) return;
-        String forWhom = Prefs.jellyfinUser().toLowerCase(Locale.ROOT) + "/" + Prefs.cards();
-        if (forWhom.equals(jellyfinFor) && now - jellyfinAt < 60_000L && now >= jellyfinAt) return;
-        jellyfinFetching = true;
-        jellyfinAt = now;
+    /**
+     * One of your own lists, every `every` ms at most (they change as you watch), and right away when `forWhom` (the
+     * Jellyfin user and the card count) changed.
+     */
+    private void refreshOwn(String kind, String forWhom, long every, Fetch fetch) {
+        long now = System.currentTimeMillis(), at = ownAt.containsKey(kind) ? ownAt.get(kind) : 0;
+        if (forWhom.equals(ownFor.get(kind)) && now - at < every && now >= at) return;
+        if (!ownFetching.add(kind)) return;
+        ownAt.put(kind, now);
         io.execute(() -> {
             try {
-                List<Pick> list = Jellyfin.fetch(Prefs.cards());
-                jellyfinFor = forWhom;
+                List<Pick> list = fetch.run(Prefs.cards());
+                ownFor.put(kind, forWhom);
                 for (Pick p : list) {
                     try {
                         download(p);
                     } catch (IOException e) {
-                        AppLog.w("jellyfin image: " + e.getMessage());
+                        AppLog.w(kind + " image: " + e.getMessage());
                     }
                 }
-                boolean changed = !sameList(list, jellyfin);
-                jellyfin = list;
-                cache.edit().putString("jellyfin", Jellyfin.save(list).toString()).apply();
-                if (changed) notifyListeners();
+                List<Pick> before = own.get(kind);
+                own.put(kind, list);
+                cache.edit().putString(kind, Jellyfin.save(list).toString()).apply();
+                if (before == null || !sameList(list, before)) notifyListeners();
             } catch (Exception e) {
-                AppLog.w("jellyfin: " + (e.getMessage() == null ? e.toString() : e.getMessage()));
+                AppLog.w(kind + ": " + (e.getMessage() == null ? e.toString() : e.getMessage()));
             } finally {
-                jellyfinFetching = false;
+                ownFetching.remove(kind);
             }
         });
     }
@@ -638,7 +655,8 @@ final class Recs {
         //noinspection ResultOfMethodCallIgnored
         f.getParentFile().mkdirs();
         File part = new File(f.getPath() + ".part");
-        HttpURLConnection c = p.image != null ? Jellyfin.open(p.image)
+        HttpURLConnection c = p.image != null && p.image.startsWith("https://") ? (HttpURLConnection) new URL(p.image).openConnection()
+                : p.image != null ? Jellyfin.open(p.image)
                 : (HttpURLConnection) new URL(IMAGES + p.backdrop).openConnection();
         c.setConnectTimeout(8000);
         c.setReadTimeout(20000);
@@ -676,7 +694,8 @@ final class Recs {
             synchronized (images) {
                 images.put(p.backdrop, backdrop);
                 // The light design keeps every tab's cards (three per tab) ready, the "Continue" tab's too.
-                int max = forLight ? Prefs.cards() + 10 : 4;   // the current tab's cards and the others' first three
+                // The current tab's cards (up to 12 on the anime tab) and its neighbors' first three.
+                int max = forLight ? Math.max(Prefs.cards(), MAX_OWN) + 7 : 4;
                 while (images.size() > max) images.remove(images.keySet().iterator().next());
             }
             notifyListeners();
