@@ -45,6 +45,9 @@ final class Recs {
         String kind;            // "movie" or "tv"
         String title, backdrop, meta = "", app, pkg;
         boolean detailed;
+        // Jellyfin ("jellyfin" kind): the item to open in Wholphin, and its image's path on the server
+        String itemId, itemType, seriesId, seasonId, image;
+        int season = -1, episode = -1;
     }
 
     interface Listener { void onRecs(); }
@@ -73,6 +76,7 @@ final class Recs {
     private static final Map<String, String> SERVICE_NAME = new HashMap<>();
     static {
         SERVICE_NAME.put("netflix", "Netflix");
+        SERVICE_NAME.put(Jellyfin.KIND, "Wholphin");
         SERVICE_NAME.put("prime", "Prime Video");
         SERVICE_NAME.put("disney", "Disney+");
         SERVICE_NAME.put("hulu", "Hulu");
@@ -107,6 +111,10 @@ final class Recs {
     private volatile boolean light;     // light design: builds only the cards (all three tabs' cards fit in memory)
     private volatile long failedAt, keyStamp;
     private volatile String listLanguage = "";   // language used for the saved titles, genres and texts
+    private volatile List<Pick> jellyfin = new ArrayList<>();
+    private volatile long jellyfinAt;
+    private volatile String jellyfinFor = "";   // user and card count the list was fetched for
+    private volatile boolean jellyfinFetching;
 
     private Recs(Context c) {
         context = c;
@@ -119,6 +127,8 @@ final class Recs {
             listAt = cache.getLong("listAt", 0);
             listLanguage = cache.getString("language", cache.getBoolean("english", false) ? "en" : "pt");
             keyStamp = cache.getLong("keyStamp", 0);
+            String shows = cache.getString("jellyfin", null);
+            if (shows != null && Jellyfin.configured()) jellyfin = Jellyfin.parse(new JSONArray(shows));
         } catch (Exception ignored) {
         }
     }
@@ -170,6 +180,13 @@ final class Recs {
     /** This hour's 3, movies only ("movie") or shows only ("tv"); null = both (the home screen tabs). */
     List<Pick> now(String kind) {
         List<Pick> list = new ArrayList<>();
+        if (Jellyfin.KIND.equals(kind)) {
+            if (Jellyfin.configured() && installed(Jellyfin.WHOLPHIN)) {
+                List<Pick> all = jellyfin;
+                list.addAll(all.subList(0, Math.min(all.size(), Prefs.cards())));
+            }
+            return list;
+        }
         if (!hasKey(context)) return list;    // no TMDB key: no recommendations
         Map<String, Boolean> have = new HashMap<>();   // one look per app, not per title (this runs every 15 s)
         for (Pick p : picks) {
@@ -178,11 +195,13 @@ final class Recs {
         }
         if (list.isEmpty()) return list;
         long hour = System.currentTimeMillis() / 3600_000L;
-        // Three per hour, never two from the same franchise ("Law & Order" and "Law & Order: Special…").
+        // A new set every hour (as many as Home Settings asks for), never two from the same franchise ("Law & Order"
+        // and "Law & Order: Special…").
+        int n = Prefs.cards();
         List<Pick> out = new ArrayList<>();
         java.util.Set<String> seen = new java.util.HashSet<>();
-        for (int i = 0; i < list.size() && out.size() < 3; i++) {
-            Pick p = list.get((int) ((hour * 3 + i) % list.size()));
+        for (int i = 0; i < list.size() && out.size() < n; i++) {
+            Pick p = list.get((int) ((hour * n + i) % list.size()));
             if (seen.add(franchise(p.title))) out.add(p);
         }
         return out;
@@ -230,6 +249,7 @@ final class Recs {
 
     /** With a key: fetches the list if stale or the time of day (morning/afternoon/night) changed; then the details. */
     void refreshIfStale() {
+        refreshJellyfin();
         if (!hasKey(context) || fetching) return;
         long now = System.currentTimeMillis();
         long stamp = sourceStamp();   // a new key, country or installed streaming-app set refetches
@@ -274,6 +294,46 @@ final class Recs {
                 notifyListeners();
             }
         });
+    }
+
+    /** The "Continue" tab's list, at most once a minute (it changes as you watch), and right away for another user. */
+    private void refreshJellyfin() {
+        long now = System.currentTimeMillis();
+        if (!Jellyfin.configured() || jellyfinFetching) return;
+        String forWhom = Prefs.jellyfinUser().toLowerCase(Locale.ROOT) + "/" + Prefs.cards();
+        if (forWhom.equals(jellyfinFor) && now - jellyfinAt < 60_000L && now >= jellyfinAt) return;
+        jellyfinFetching = true;
+        jellyfinAt = now;
+        io.execute(() -> {
+            try {
+                List<Pick> list = Jellyfin.fetch(Prefs.cards());
+                jellyfinFor = forWhom;
+                for (Pick p : list) {
+                    try {
+                        download(p);
+                    } catch (IOException e) {
+                        AppLog.w("jellyfin image: " + e.getMessage());
+                    }
+                }
+                boolean changed = !sameList(list, jellyfin);
+                jellyfin = list;
+                cache.edit().putString("jellyfin", Jellyfin.save(list).toString()).apply();
+                if (changed) notifyListeners();
+            } catch (Exception e) {
+                AppLog.w("jellyfin: " + (e.getMessage() == null ? e.toString() : e.getMessage()));
+            } finally {
+                jellyfinFetching = false;
+            }
+        });
+    }
+
+    private static boolean sameList(List<Pick> a, List<Pick> b) {
+        if (a.size() != b.size()) return false;
+        for (int i = 0; i < a.size(); i++) {
+            if (!key(a.get(i)).equals(key(b.get(i))) || !a.get(i).meta.equals(b.get(i).meta)
+                    || !a.get(i).backdrop.equals(b.get(i).backdrop)) return false;
+        }
+        return true;
     }
 
     /** Home screen design: the ready images are rebuilt for it (the light design uses cards, not the whole photo). */
@@ -358,6 +418,7 @@ final class Recs {
 
     /** Movies and shows are numbered separately on TMDB: a pick is identified by type + number. */
     static String key(Pick p) {
+        if (p.itemId != null) return p.kind + ":" + p.itemId;
         return p.kind + ":" + p.id;
     }
 
@@ -409,8 +470,9 @@ final class Recs {
         // Trending first, then the new releases; movies and shows alternating, without repeats, up to 24.
         List<Pick> list = new ArrayList<>();
         java.util.Set<String> seen = new java.util.HashSet<>();
-        alternate(list, seen, hotMovies, hotShows, 24);
-        alternate(list, seen, newMovies, newShows, 24);
+        int max = Math.max(24, 4 * Prefs.cards());   // enough for every tab's cards to change each hour
+        alternate(list, seen, hotMovies, hotShows, max);
+        alternate(list, seen, newMovies, newShows, max);
         if (list.isEmpty()) throw new IOException("TMDB returned no recommendations");
         picks = list;
         period = p;
@@ -568,7 +630,7 @@ final class Recs {
         return key.isEmpty() ? null : key;
     }
 
-    // MARK: - Images (TMDB originals on disk, up to 24 so the whole list fits; this hour's kept ready in memory)
+    // MARK: - Images (originals on disk, enough for the whole list; this hour's kept ready in memory)
 
     private void download(Pick p) throws IOException {
         File f = imageFile(p);
@@ -576,7 +638,8 @@ final class Recs {
         //noinspection ResultOfMethodCallIgnored
         f.getParentFile().mkdirs();
         File part = new File(f.getPath() + ".part");
-        HttpURLConnection c = (HttpURLConnection) new URL(IMAGES + p.backdrop).openConnection();
+        HttpURLConnection c = p.image != null ? Jellyfin.open(p.image)
+                : (HttpURLConnection) new URL(IMAGES + p.backdrop).openConnection();
         c.setConnectTimeout(8000);
         c.setReadTimeout(20000);
         try (InputStream in = c.getInputStream(); FileOutputStream out = new FileOutputStream(part)) {
@@ -587,7 +650,7 @@ final class Recs {
             c.disconnect();
         }
         if (!part.renameTo(f)) throw new IOException("couldn't save the image");
-        prune(f.getParentFile());
+        prune(f.getParentFile(), 24 + 4 * Prefs.cards());
     }
 
     /** Reads the original (≥ 1920 wide) and builds the backdrop (Backdrop: cards plus frosted and glass versions). */
@@ -612,7 +675,9 @@ final class Recs {
             if (forLight != light) return;   // the design changed midway: this one is stale
             synchronized (images) {
                 images.put(p.backdrop, backdrop);
-                while (images.size() > (forLight ? 10 : 4)) images.remove(images.keySet().iterator().next());
+                // The light design keeps every tab's cards (three per tab) ready, the "Continue" tab's too.
+                int max = forLight ? Prefs.cards() + 10 : 4;   // the current tab's cards and the others' first three
+                while (images.size() > max) images.remove(images.keySet().iterator().next());
             }
             notifyListeners();
         } catch (IOException | RuntimeException | OutOfMemoryError e) {
@@ -622,11 +687,12 @@ final class Recs {
         }
     }
 
-    private static void prune(File dir) {
+    /** Keeps the `keep` newest images (every tab's cards fit, so they aren't downloaded again and again). */
+    private static void prune(File dir, int keep) {
         File[] files = dir.listFiles();
-        if (files == null || files.length <= 24) return;
+        if (files == null || files.length <= keep) return;
         Arrays.sort(files, (a, b) -> Long.compare(a.lastModified(), b.lastModified()));
-        for (int i = 0; i < files.length - 24; i++) {
+        for (int i = 0; i < files.length - keep; i++) {
             //noinspection ResultOfMethodCallIgnored
             files[i].delete();
         }

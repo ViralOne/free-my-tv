@@ -59,13 +59,29 @@ final class Config {
     static final String TEMPERATURE = "$(prop temperature auto)";
     static final boolean DISABLE_ASSISTANT = $ASSIST;
     static final boolean SHOW_CRYPTO = $CRYPTO;
+    static final String JELLYFIN_URL = "$(prop jellyfin_url '' | sed 's:/*$::')";
+    static final String JELLYFIN_KEY = "$(prop jellyfin_key '')";
+    static final String JELLYFIN_USER = "$(prop jellyfin_user '')";
 }
 EOF
 
+# Plain http only to the Jellyfin server (a home server rarely has https); everything else stays https-only.
+JF_HOST="$(prop jellyfin_url '' | sed -E 's#^[a-zA-Z]+://##; s#[/:].*$##')"
+mkdir -p out/res-gen/xml
+{
+  echo '<?xml version="1.0" encoding="utf-8"?>'
+  echo '<network-security-config>'
+  echo '    <base-config cleartextTrafficPermitted="false" />'
+  [[ "$(prop jellyfin_url '')" == http://* && -n "$JF_HOST" ]] &&
+    echo "    <domain-config cleartextTrafficPermitted=\"true\"><domain>$JF_HOST</domain></domain-config>"
+  echo '</network-security-config>'
+} > out/res-gen/xml/network_security_config.xml
+
 # --- Build
 "$BT/aapt2" compile --dir app/res -o out/res.zip
+"$BT/aapt2" compile out/res-gen/xml/network_security_config.xml -o out
 # Fonts uncompressed: Android reads them straight from the APK.
-"$BT/aapt2" link -o out/base.apk -I "$AJ" --manifest app/AndroidManifest.xml --java out/gen out/res.zip \
+"$BT/aapt2" link -o out/base.apk -I "$AJ" --manifest app/AndroidManifest.xml --java out/gen out/res.zip out/xml_network_security_config.xml.flat \
   --min-sdk-version 31 --target-sdk-version 33 -A app/assets -0 ttf
 "$JAVAC" -nowarn -Xlint:-options -source 8 -target 8 -bootclasspath "$AJ:$BT/core-lambda-stubs.jar" -classpath "$AJ" \
   -d out/classes $(find app/src out/gen -name '*.java')

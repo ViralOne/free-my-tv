@@ -610,40 +610,72 @@ public class SettingsActivity extends Activity {
         // MARK: - Home Settings and Remote Buttons
 
         private static final String[] LANGUAGES = {"auto", "pt", "en", "es"}, UNITS = {"auto", "C", "F"}, THEMES = {"auto", "light", "dark"};
-        /** Home Settings: language, temperature, theme, weather, quotes, then one row per coin. */
-        private static final int COIN_ROWS = 5;
+        /** Home Settings rows: language, temperature, theme, cards per tab, Jellyfin profile, weather, quotes, coins. */
+        private static final int R_LANGUAGE = 0, R_TEMPERATURE = 1, R_THEME = 2, R_CARDS = 3, R_PROFILE = 4, R_WEATHER = 5,
+                R_QUOTES = 6, R_COIN = 7;
 
         private boolean dollar() {
             return "BRL".equalsIgnoreCase(Config.CURRENCY.trim());
         }
 
+        /** The rows in order (the profile only with a Jellyfin server, the dollar only for prices in reais). */
+        private int[] settingRows() {
+            List<Integer> l = new ArrayList<>(java.util.Arrays.asList(R_LANGUAGE, R_TEMPERATURE, R_THEME, R_CARDS));
+            if (Jellyfin.configured()) l.add(R_PROFILE);
+            l.addAll(java.util.Arrays.asList(R_WEATHER, R_QUOTES, R_COIN, R_COIN + 1, R_COIN + 2));
+            if (dollar()) l.add(R_COIN + 3);
+            int[] out = new int[l.size()];
+            for (int i = 0; i < out.length; i++) out[i] = l.get(i);
+            return out;
+        }
+
         private String[] settingLabels() {
-            List<String> l = new ArrayList<>();
-            l.add(Ui.tr("Idioma", "Language"));
-            l.add(Ui.tr("Temperatura", "Temperature"));
-            l.add(Ui.tr("Tema", "Theme"));
-            l.add(Ui.tr("Widget do clima", "Weather widget"));
-            l.add(Ui.tr("Widget de cotações", "Quotes widget"));
-            l.add("Bitcoin");
-            l.add("Ethereum");
-            l.add("Solana");
-            if (dollar()) l.add(Ui.tr("Dólar", "Dollar"));
-            return l.toArray(new String[0]);
+            int[] rows = settingRows();
+            String[] l = new String[rows.length];
+            for (int i = 0; i < rows.length; i++) {
+                switch (rows[i]) {
+                    case R_LANGUAGE: l[i] = Ui.tr("Idioma", "Language"); break;
+                    case R_TEMPERATURE: l[i] = Ui.tr("Temperatura", "Temperature"); break;
+                    case R_THEME: l[i] = Ui.tr("Tema", "Theme"); break;
+                    case R_CARDS: l[i] = Ui.tr("Cartões por aba", "Cards per tab"); break;
+                    case R_PROFILE: l[i] = Ui.tr("Perfil do Jellyfin", "Jellyfin profile"); break;
+                    case R_WEATHER: l[i] = Ui.tr("Widget do clima", "Weather widget"); break;
+                    case R_QUOTES: l[i] = Ui.tr("Widget de cotações", "Quotes widget"); break;
+                    default: l[i] = rows[i] == R_COIN + 3 ? Ui.tr("Dólar", "Dollar")
+                            : new String[] {"Bitcoin", "Ethereum", "Solana"}[rows[i] - R_COIN];
+                }
+            }
+            return l;
         }
 
         private String[] settingValues() {
-            String[] labels = settingLabels();
-            String[] v = new String[labels.length];
-            String lang = Prefs.language();
-            v[0] = lang.equals("pt") ? "Português" : lang.equals("en") ? "English" : lang.equals("es") ? "Español" : Ui.tr("Automático", "Automatic");
-            String unit = Prefs.temperature();
-            v[1] = unit.equals("C") ? "°C" : unit.equals("F") ? "°F" : Ui.tr("Automática", "Automatic");
-            String theme = Prefs.theme();
-            v[2] = theme.equals("light") ? Ui.tr("Claro", "Light") : theme.equals("dark") ? Ui.tr("Escuro", "Dark") : Ui.tr("Automático", "Automatic");
-            v[3] = onOff(Prefs.weather());
-            v[4] = onOff(Prefs.quotes());
-            // No quotes widget, nowhere to show prices: the coins read as off (and stay locked) until it is back on.
-            for (int i = COIN_ROWS; i < v.length; i++) v[i] = onOff(Prefs.quotes() && Prefs.coin(i - COIN_ROWS));
+            int[] rows = settingRows();
+            String[] v = new String[rows.length];
+            for (int i = 0; i < rows.length; i++) {
+                switch (rows[i]) {
+                    case R_LANGUAGE: {
+                        String lang = Prefs.language();
+                        v[i] = lang.equals("pt") ? "Português" : lang.equals("en") ? "English" : lang.equals("es") ? "Español" : Ui.tr("Automático", "Automatic");
+                        break;
+                    }
+                    case R_TEMPERATURE: {
+                        String unit = Prefs.temperature();
+                        v[i] = unit.equals("C") ? "°C" : unit.equals("F") ? "°F" : Ui.tr("Automática", "Automatic");
+                        break;
+                    }
+                    case R_THEME: {
+                        String theme = Prefs.theme();
+                        v[i] = theme.equals("light") ? Ui.tr("Claro", "Light") : theme.equals("dark") ? Ui.tr("Escuro", "Dark") : Ui.tr("Automático", "Automatic");
+                        break;
+                    }
+                    case R_CARDS: v[i] = String.valueOf(Prefs.cards()); break;
+                    case R_PROFILE: v[i] = Prefs.jellyfinUser(); break;
+                    case R_WEATHER: v[i] = onOff(Prefs.weather()); break;
+                    case R_QUOTES: v[i] = onOff(Prefs.quotes()); break;
+                    // No quotes widget, nowhere to show prices: the coins read as off (and stay locked) until it is back on.
+                    default: v[i] = onOff(Prefs.quotes() && Prefs.coin(rows[i] - R_COIN));
+                }
+            }
             return v;
         }
 
@@ -696,27 +728,47 @@ public class SettingsActivity extends Activity {
                 Prefs.setKeyApp(Prefs.KEYS[focus], appPkgs.get(next));
                 return;
             }
-            switch (focus) {
-                case 0: {
+            int[] rows = settingRows();
+            if (focus >= rows.length) return;
+            switch (rows[focus]) {
+                case R_LANGUAGE: {
                     int at = java.util.Arrays.asList(LANGUAGES).indexOf(Prefs.language());
                     Prefs.setLanguage(LANGUAGES[(at + dir + LANGUAGES.length) % LANGUAGES.length]);
                     break;
                 }
-                case 1: {
+                case R_TEMPERATURE: {
                     int at = java.util.Arrays.asList(UNITS).indexOf(Prefs.temperature());
                     Prefs.setTemperature(UNITS[(at + dir + UNITS.length) % UNITS.length]);
                     break;
                 }
-                case 2: {
+                case R_THEME: {
                     int at = java.util.Arrays.asList(THEMES).indexOf(Prefs.theme());
                     Prefs.setTheme(THEMES[(at + dir + THEMES.length) % THEMES.length]);
                     break;
                 }
-                case 3: Prefs.setWeather(!Prefs.weather()); break;
-                case 4: Prefs.setQuotes(!Prefs.quotes()); break;
+                case R_CARDS: {
+                    int n = Prefs.CARD_COUNTS.length, at = 0;
+                    for (int i = 0; i < n; i++) if (Prefs.CARD_COUNTS[i] == Prefs.cards()) at = i;
+                    Prefs.setCards(Prefs.CARD_COUNTS[(at + dir + n) % n]);
+                    break;
+                }
+                case R_PROFILE: {
+                    // The server's users, asked for when Home Settings opened; not there yet: ask again.
+                    List<String> users = Jellyfin.users();
+                    if (users.isEmpty()) {
+                        Jellyfin.loadUsers(this::postInvalidate);
+                        return;
+                    }
+                    int at = 0;
+                    for (int i = 0; i < users.size(); i++) if (users.get(i).equalsIgnoreCase(Prefs.jellyfinUser())) at = i;
+                    Prefs.setJellyfinUser(users.get((at + dir + users.size()) % users.size()));
+                    break;
+                }
+                case R_WEATHER: Prefs.setWeather(!Prefs.weather()); break;
+                case R_QUOTES: Prefs.setQuotes(!Prefs.quotes()); break;
                 default:
                     if (!Prefs.quotes()) return;
-                    Prefs.setCoin(focus - COIN_ROWS, !Prefs.coin(focus - COIN_ROWS));
+                    Prefs.setCoin(rows[focus] - R_COIN, !Prefs.coin(rows[focus] - R_COIN));
                     break;
             }
             HomeData.get(getContext()).settingsChanged();
@@ -847,6 +899,7 @@ public class SettingsActivity extends Activity {
             boolean keys = screen == REMOTE_KEYS;
             String[] labels = keys ? keyLabels() : settingLabels();
             String[] values = keys ? keyValues() : settingValues();
+            int[] rows = keys ? null : settingRows();
             Paint heading = Ui.text(Ui.displaySemibold, 34 * k, 0xFFFFFFFF);
             c.drawText(keys ? Ui.tr("Botões do Controle", "Remote Buttons") : Ui.tr("Ajustes do Início", "Home Settings"),
                     LIST_X * k + 30 * k, (LIST_TOP - 24) * k, heading);
@@ -855,7 +908,7 @@ public class SettingsActivity extends Activity {
                 rowRect.set(LIST_X * k, y, LIST_R * k, y + LIST_ROW_H * k);
                 float f = drawRowBackground(c, i);
                 rowLabel.setColor(blend(0xF2FFFFFF, INK, f));
-                boolean locked = !keys && i >= COIN_ROWS && !Prefs.quotes();
+                boolean locked = !keys && rows[i] >= R_COIN && !Prefs.quotes();
                 rowValue.setColor(blend(locked ? 0x59FFFFFF : 0xB3FFFFFF, locked ? 0x591C1C1E : 0xB31C1C1E, f));
                 if (locked) rowLabel.setColor(blend(0x73FFFFFF, 0x731C1C1E, f));
                 float base = rowRect.centerY() + Ui.halfCap(rowLabel);
@@ -908,6 +961,7 @@ public class SettingsActivity extends Activity {
             } else if (focus == 2) {
                 screen = HOME_SETTINGS;
                 focus = 0;
+                if (Jellyfin.configured()) Jellyfin.loadUsers(this::postInvalidate);   // for the profile row
             } else if (focus == 3) {
                 openShelfEditor();
             } else if (focus == 4) {

@@ -69,6 +69,26 @@ final class Prefs {
 
     static void setTheme(String v) { put("theme", v); }
 
+    // MARK: - Home screen cards and Jellyfin
+
+    /** How many cards each home screen tab can show (the row scrolls past the first three). */
+    static final int[] CARD_COUNTS = {3, 6, 9, 12};
+
+    static int cards() {
+        int v = sp().getInt("cards", 6);
+        for (int n : CARD_COUNTS) if (n == v) return v;
+        return 6;
+    }
+
+    static void setCards(int v) {
+        sp().edit().putInt("cards", v).apply();
+        version++;
+    }
+
+    /** Whose "Continue" list the home screen shows (a user name on the Jellyfin server). */
+    static String jellyfinUser() { return sp().getString("jellyfinUser", Config.JELLYFIN_USER).trim(); }
+    static void setJellyfinUser(String name) { put("jellyfinUser", name); }
+
     // MARK: - City (from config.properties)
 
     static String city() { return Config.CITY.trim(); }

@@ -21,6 +21,8 @@ final class Spanish {
             case "Crypto": return "Cripto";
             case "24h change": return "variación en 24 h";
             case "For You": return "Para ti";
+            case "Cards per tab": return "Tarjetas por pestaña";
+            case "Jellyfin profile": return "Perfil de Jellyfin";
             case "Couldn't open ": return "No se pudo abrir ";
             case " of ": return " de ";
             case ", tab ": return ", pestaña ";

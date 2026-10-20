@@ -70,6 +70,7 @@ final class HomeApps {
         float logoInk;      // fraction of the logo with ink (thin logos are drawn larger, with the same "weight")
         float logoScale = 1; // size tweak by eye (compact logos need more)
         boolean connected = true;
+        Intent intent;      // a given screen in the app (a Jellyfin title in Wholphin); null = the app's start
     }
 
     /**
@@ -351,6 +352,10 @@ final class HomeApps {
         Intent intent;
         switch (it.kind) {
             case APP:
+                if (it.intent != null) {
+                    intent = new Intent(it.intent);
+                    break;
+                }
                 intent = launchIntent(a.getPackageManager(), it.pkg);
                 if (intent != null) intent.addFlags(Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED);
                 break;

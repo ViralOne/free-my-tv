@@ -84,6 +84,7 @@ The first values come from `config.properties`, created by the first build. Most
 | `currency` | Crypto prices in `USD`, `EUR`, `BRL`… | `USD` |
 | `temperature` | `C`, `F` or `auto` | `auto` |
 | `disable_assistant` | Also turn off Google Assistant | `false` |
+| `jellyfin_url`, `jellyfin_key`, `jellyfin_user` | Optional: a *Continue* tab with what you're watching on your Jellyfin server, opened in Wholphin (API key: Jellyfin → Dashboard → API Keys) | empty |
 
 Changed something? Run `./build.sh` and install again. Keep `freemytv.keystore`: updates are signed with it.
 
@@ -159,7 +160,7 @@ The website ([freemytv.io](https://freemytv.io)) is in [`docs/`](docs): plain HT
 
 ## Privacy
 
-No accounts, no analytics, no tracking. The app talks to TMDB, Open-Meteo (with the coordinates you set), and Binance only when `show_crypto=true`. Your settings stay on your computer and your TV.
+No accounts, no analytics, no tracking. The app talks to TMDB, Open-Meteo (with the coordinates you set), Binance only when `show_crypto=true`, and your own Jellyfin server only when you set one up. Your settings stay on your computer and your TV.
 
 ## Credits
 
