@@ -75,9 +75,17 @@ TVs that don't run Google TV or Android TV (Samsung, LG and others): the way is 
 
 ## The code
 
-- Java 8 language level, minSdk 31 (Android 12), targetSdk 33. No Gradle, no libraries: only the Android SDK.
+- Java 8 language level, minSdk 28 (Android 9), targetSdk 33. No Gradle, no libraries: only the Android SDK.
+  Android 9 has no RenderNode (`Recording` wraps it, with a Picture there) and no `cmd role`. On Android 9 to 11
+  (`Ui.LEGACY`) the home screen skips the GPU layers, draws blurred shadows from cached bitmaps (`Shadows`) and
+  rounds images with a shader instead of clipPath: their GPUs (a Mi Box 3's Mali-450) choked on those.
+  Android 11 runs the screensaver as `ScreensaverAlone`, in the main process (its DreamActivity needs the dream in the
+  app's default process, without a home activity); `res/values-v30/bools.xml` picks it, every other version keeps
+  `Screensaver` in `:home`. Keep both in step.
+  To check for newer APIs, compile against `platforms/android-28/android.jar`: only AGSL (`RuntimeShader`, guarded
+  by a try/catch), `BitmapShader.setFilterMode` (guarded) and `Recording.Node` should come up.
 - The home screen is drawn by hand on one Canvas (`HomeView`); the glass and the sky are AGSL shaders (`Shaders`,
-  Android 13+, with a fallback for 12). Keep it at 60 fps: no allocations in `onDraw`, no work on the UI thread.
+  Android 13+, with a fallback for 9 to 12). Keep it at 60 fps: no allocations in `onDraw`, no work on the UI thread.
 - `HomeMode` runs every switch as a background job (`ModeJob`) in the main process; the UI is in the `:home`
   process. `Watchdog` goes back to the stock home screen after 3 crashes in 5 minutes.
 - On-screen text: `Ui.tr("pt", "en")`, with the Spanish in `Spanish.java` (keyed by the English); text built at

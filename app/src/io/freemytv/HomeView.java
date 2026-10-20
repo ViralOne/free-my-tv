@@ -4,9 +4,11 @@ import android.app.Activity;
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.graphics.Bitmap;
+import android.graphics.BitmapShader;
 import android.graphics.BlurMaskFilter;
 import android.graphics.Canvas;
 import android.graphics.LinearGradient;
+import android.graphics.Matrix;
 import android.graphics.Paint;
 import android.graphics.Path;
 import android.graphics.Rect;
@@ -34,8 +36,10 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.WeakHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.function.Consumer;
 
 /**
  * The home screen, styled after the Apple TV app with the macOS 27 glass:
@@ -78,6 +82,8 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private static final int SMOKE = 0xFF111113, INK = 0xFF1C1C1E, WHITE = 0xFFF5F5F7;
     private static final int UP_COLOR = 0xFF30D158, DOWN_COLOR = 0xFFFF453A;
     private static final long TOAST_MS = 6000, FADE_MS = 800;
+    /** Blur radii of the shadow and shadowDeep paints (Shadows needs them to draw the same blur on older TVs). */
+    private static final float SHADOW_BLUR = 26, DEEP_BLUR = 30;
     private static final int SKY = 0, HERO = 1, STATUS = 2, PLATTER = 3, TILES = 4, DRAWER = 5, SHEET = 6, TOAST = 7, ROWS = 8;
     private static final int Z_STATUS = 0, Z_HERO = 1, Z_SHELF = 2, Z_DRAWER = 3;
     private static final ExecutorService LOADER = Executors.newSingleThreadExecutor();
@@ -259,6 +265,10 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private final Paint shadowSoft = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint shadowDeep = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint halo = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Shadows shadows = new Shadows();
+    private final Map<Bitmap, BitmapShader> imageShaders = new WeakHashMap<>();
+    private final Matrix imageMatrix = new Matrix();
+    private final Paint imageFill = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
     private final Paint border = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint rim = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint sheen = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -349,7 +359,10 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         sheetLayer = new Layer(a, SHEET);
         toastLayer = new Layer(a, TOAST);
         // Hardware layers on the GPU: only the one that changed is redrawn; moving, fading and scaling stay cheap.
-        for (View v : new View[] {heroLayer, rowsLayer, status, platter, tiles, drawerLayer, sheetLayer}) v.setLayerType(LAYER_TYPE_HARDWARE, null);
+        // Not on Android 9 to 11: on older GPUs (a Mi Box 3's Mali-450) redrawing and compositing a big layer on every
+        // frame cost more than drawing straight to the screen (measured: focus on the picks 33 → 12 ms a frame, the
+        // drawer 19 → 17 ms).
+        for (View v : new View[] {heroLayer, rowsLayer, status, platter, tiles, drawerLayer, sheetLayer}) v.setLayerType(Ui.LEGACY ? LAYER_TYPE_NONE : LAYER_TYPE_HARDWARE, null);
         for (View v : new View[] {sky, heroLayer, rowsLayer, status, platter, tiles, drawerLayer, sheetLayer, toastLayer}) {
             v.setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_NO);   // TalkBack reads the items (Spoken)
             addView(v);
@@ -617,9 +630,9 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         gridLabel = new TextPaint(Ui.text(Ui.medium, 24 * k, 0x99FFFFFF));
         gridLabel.setTextAlign(Paint.Align.CENTER);
         toastPaint = new TextPaint(Ui.text(Ui.medium, 26 * k, 0xF2FFFFFF));
-        shadow.setMaskFilter(new BlurMaskFilter(26 * k, BlurMaskFilter.Blur.NORMAL));
+        shadow.setMaskFilter(new BlurMaskFilter(SHADOW_BLUR * k, BlurMaskFilter.Blur.NORMAL));
         shadowSoft.setMaskFilter(new BlurMaskFilter(12 * k, BlurMaskFilter.Blur.NORMAL));
-        shadowDeep.setMaskFilter(new BlurMaskFilter(30 * k, BlurMaskFilter.Blur.NORMAL));
+        shadowDeep.setMaskFilter(new BlurMaskFilter(DEEP_BLUR * k, BlurMaskFilter.Blur.NORMAL));
         halo.setMaskFilter(new BlurMaskFilter(22 * k, BlurMaskFilter.Blur.NORMAL));
         border.setStyle(Paint.Style.STROKE);
         border.setStrokeWidth(2 * k);
@@ -1138,11 +1151,46 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         tmp.set(platterRect);
         tmp.offset(0, 18 * k);
         shadow.setColor(tone(0x1F000000, 0x52000000));
-        c.drawRoundRect(tmp, radius, radius, shadow);
+        shadows.draw(c, tmp, radius, SHADOW_BLUR * k, shadow);
         // White glass by day; smoked glass at night.
         scene.liquid(c, platterRect, radius, tone(0xFFFFFFFF, SMOKE), tone(0.42f, 0.12f), tone(0.03f, 0.08f),
                 tone(30, 34) * k, tone(22, 28) * k, tone(0.65f, 0.95f), 1);
     }
+
+    /** The quotes row's text and sizes, for one set of coins, prices and text size. */
+    private final class Quotes {
+        final int[] coins;
+        final double[] prices;
+        final float size, cap, halfCap;
+        final String[] values;
+        final float[] glyphs, widths;
+
+        Quotes(int[] coins, double[] all, Paint text) {
+            this.coins = coins;
+            size = text.getTextSize();
+            cap = Ui.cap(text);
+            halfCap = Ui.halfCap(text);
+            int n = coins.length;
+            prices = new double[n];
+            values = new String[n];
+            glyphs = new float[n];
+            widths = new float[n];
+            for (int i = 0; i < n; i++) {
+                prices[i] = all[coins[i]];
+                values[i] = HomeData.compact(prices[i]);
+                glyphs[i] = Glyphs.width(getContext(), HomeData.COINS[coins[i]], cap);
+                widths[i] = text.measureText(values[i]);
+            }
+        }
+
+        boolean matches(int[] now, double[] all, float textSize) {
+            if (now != coins || textSize != size) return false;
+            for (int i = 0; i < coins.length; i++) if (Double.compare(all[coins[i]], prices[i]) != 0) return false;
+            return true;
+        }
+    }
+
+    private Quotes quotes;
 
     /** Coin logo + price in the configured currency, in a row at the right end of the tab bar. */
     private void drawQuotes(Canvas c) {
@@ -1155,27 +1203,27 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         if (fade <= 0.01f) return;
         int textColor = text.getColor();
         text.setColor(Ui.alpha(textColor, fade));
-        // On the tab row, at the right.
-        float base = (L_TABBAR_TOP + L_TABBAR_H / 2) * k + Ui.halfCap(text);
-        float cap = Ui.cap(text), gap = 6 * k, spacing = 24 * k;
         int n = HomeData.coinCount();
         if (n == 0) { text.setColor(textColor); return; }
+        // Measured once per set of prices: this row is redrawn on every frame of the cards' focus animation, and
+        // measuring text there cost ~3 ms a frame on a Mi Box 3.
         int[] coins = HomeData.active();
-        String[] values = new String[n];
-        float[] glyphs = new float[n];
-        float total = spacing * (n - 1);
-        for (int i = 0; i < n; i++) {
-            values[i] = HomeData.compact(data.prices[coins[i]]);
-            glyphs[i] = Glyphs.width(getContext(), HomeData.COINS[coins[i]], cap);
-            total += glyphs[i] + gap + text.measureText(values[i]);
+        Quotes q = quotes;
+        if (q == null || !q.matches(coins, data.prices, text.getTextSize())) {
+            q = quotes = new Quotes(coins, data.prices, text);
         }
+        // On the tab row, at the right.
+        float base = (L_TABBAR_TOP + L_TABBAR_H / 2) * k + q.halfCap;
+        float cap = q.cap, gap = 6 * k, spacing = 24 * k;
+        float total = spacing * (n - 1);
+        for (int i = 0; i < n; i++) total += q.glyphs[i] + gap + q.widths[i];
         float x = right - total;
         for (int i = 0; i < n; i++) {
-            Glyphs.coin(getContext(), c, HomeData.COINS[coins[i]], x + glyphs[i] / 2, base - cap / 2, cap,
+            Glyphs.coin(getContext(), c, HomeData.COINS[coins[i]], x + q.glyphs[i] / 2, base - cap / 2, cap,
                     Ui.alpha(tone(0xB38E8E93, 0x8CFFFFFF), fade));
-            x += glyphs[i] + gap;
-            c.drawText(values[i], x, base, text);
-            x += text.measureText(values[i]) + spacing;
+            x += q.glyphs[i] + gap;
+            c.drawText(q.values[i], x, base, text);
+            x += q.widths[i] + spacing;
         }
         text.setColor(textColor);
         String stale = HomeData.staleness(data.pricesAt, 5 * 60_000L);
@@ -1221,7 +1269,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         tmp.set(-bw / 2, -bh / 2, bw / 2, bh / 2);
         tmp.offset(0, (4 + 14 * f) * k);
         shadowDeep.setColor(Ui.alpha(0xFF000000, tone(0.14f, 0.3f) + tone(0.18f, 0.3f) * fc));
-        c.drawRoundRect(tmp, r0, r0, shadowDeep);
+        shadows.draw(c, tmp, r0, DEEP_BLUR * k, shadowDeep);
         c.restore();
         int[] style = TILE_STYLE.get(it.key);
         if (it.logo != null && style != null) {
@@ -1241,13 +1289,36 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             c.drawRoundRect(cell, r, r, tileFill);
             drawLogo(c, it, cell, s, 0);
         } else {
+            if (it.tile != null) roundImage(c, it.tile, cell, r);
+        }
+    }
+
+    /**
+     * `image` stretched over `cell`, with corners of radius `r`. Android 12+ clips to the rounded shape; on Android 9 to
+     * 11 that anti-aliased clip costs the GPU a mask on every frame of a focus animation (measured on a Mi Box 3: most of
+     * a 49 ms frame), so there the image is the shader of a rounded rectangle instead, which looks the same.
+     */
+    private void roundImage(Canvas c, Bitmap image, RectF cell, float r) {
+        if (!Ui.LEGACY) {
             clip.reset();
             clip.addRoundRect(cell, r, r, Path.Direction.CW);
             c.save();
             c.clipPath(clip);
-            if (it.tile != null) c.drawBitmap(it.tile, null, cell, bitmapPaint);
+            c.drawBitmap(image, null, cell, bitmapPaint);
             c.restore();
+            return;
         }
+        BitmapShader shader = imageShaders.get(image);
+        if (shader == null) {
+            shader = new BitmapShader(image, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP);
+            imageShaders.put(image, shader);
+        }
+        imageMatrix.setScale(cell.width() / image.getWidth(), cell.height() / image.getHeight());
+        imageMatrix.postTranslate(cell.left, cell.top);
+        shader.setLocalMatrix(imageMatrix);
+        imageFill.setShader(shader);
+        c.drawRoundRect(cell, r, r, imageFill);
+        imageFill.setShader(null);
     }
 
     /**
@@ -1382,7 +1453,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             tmp.set(r);
             tmp.offset(0, drop);
             shadow.setColor(Ui.alpha(shadowColor, 1 - dk));
-            c.drawRoundRect(tmp, radius, radius, shadow);
+            shadows.draw(c, tmp, radius, SHADOW_BLUR * k, shadow);
             scene.glass(c, r, radius, 0xFFFFFFFF, lightTint, 0, 0, 0.02f, 1, 1 - dk);
         }
         if (dk > 0.001f) scene.glass(c, r, radius, SMOKE, 0.4f, 0, 0, 0.02f, 1, dk);
@@ -1426,7 +1497,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             tmp.set(cell);
             tmp.offset(0, 12 * k * f);
             shadow.setColor(Ui.alpha(0xFF000000, 0.45f * f));
-            c.drawRoundRect(tmp, r, r, shadow);
+            shadows.draw(c, tmp, r, SHADOW_BLUR * k, shadow);
         }
         if (f < 0.99f) drawerGlass(c, cell, r, 0.7f, 0x14000000, 6 * k);
         if (f > 0.01f) {
@@ -1450,6 +1521,11 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     /** Weather for your location: now (large), the next 6 hours, and sunrise and sunset. */
     private void drawWeatherCard(Canvas c, RectF r) {
         drawerCard(c, r);
+        if (Ui.LEGACY) weatherSnapshot.draw(c, r, drawerCardsKey(), cc -> drawWeather(cc, r));
+        else drawWeather(c, r);
+    }
+
+    private void drawWeather(Canvas c, RectF r) {
         float x = r.left + 34 * k;
         c.drawText(Prefs.city().isEmpty() ? Ui.tr("Clima", "Weather") : Prefs.city(), x, r.top + 54 * k, cardTitle);
         HomeData.Weather wx = data.weather;
@@ -1491,6 +1567,48 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     /** Prices in the configured currency with the 24 h change (green/red, like Apple's Stocks app). */
     private void drawQuotesCard(Canvas c, RectF r) {
         drawerCard(c, r);
+        if (Ui.LEGACY) quotesSnapshot.draw(c, r, drawerCardsKey(), cc -> drawPrices(cc, r));
+        else drawPrices(c, r);
+    }
+
+    /**
+     * What the drawer cards show depends on: the data, the settings, the language, day or night, and the minute (the
+     * sunrise and sunset, "12 min ago").
+     */
+    private String drawerCardsKey() {
+        return data.weatherAt + "|" + data.pricesAt + "|" + Prefs.version + "|" + Ui.language + "|"
+                + Float.floatToIntBits(dark()) + "|" + System.currentTimeMillis() / 60_000;
+    }
+
+    /**
+     * Android 9 to 11: a drawer card's content (its text and symbols, not its glass) kept as a bitmap. The drawer is
+     * redrawn on every frame of its focus animation, and laying that text out again took ~15 ms a frame on a Mi Box 3.
+     */
+    private static final class Snapshot {
+        private Bitmap bitmap;
+        private String key = "";
+
+        void draw(Canvas c, RectF r, String key, Consumer<Canvas> content) {
+            int left = Math.round(r.left), top = Math.round(r.top);
+            int w = Math.max(1, Math.round(r.right) - left), h = Math.max(1, Math.round(r.bottom) - top);
+            if (bitmap == null || bitmap.getWidth() != w || bitmap.getHeight() != h) {
+                bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+                this.key = "";
+            }
+            if (!key.equals(this.key)) {
+                bitmap.eraseColor(0);
+                Canvas cc = new Canvas(bitmap);
+                cc.translate(-left, -top);
+                content.accept(cc);
+                this.key = key;
+            }
+            c.drawBitmap(bitmap, left, top, null);
+        }
+    }
+
+    private final Snapshot weatherSnapshot = new Snapshot(), quotesSnapshot = new Snapshot();
+
+    private void drawPrices(Canvas c, RectF r) {
         float x = r.left + 34 * k, right = r.right - 34 * k;
         c.drawText(Ui.tr("Cotações", "Crypto"), x, r.top + 54 * k, cardTitle);
         String stale = HomeData.staleness(data.pricesAt, 5 * 60_000L);
@@ -1646,23 +1764,18 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             tmp.set(cell);
             tmp.offset(0, 16 * k * f);
             shadow.setColor(Ui.alpha(0xFF000000, 0.55f * fc));
-            c.drawRoundRect(tmp, r, r, shadow);
+            shadows.draw(c, tmp, r, SHADOW_BLUR * k, shadow);
         }
-        clip.reset();
-        clip.addRoundRect(cell, r, r, Path.Direction.CW);
-        c.save();
-        c.clipPath(clip);
-        if (image != null) c.drawBitmap(image, null, cell, bitmapPaint);
+        if (image != null) roundImage(c, image, cell, r);
         if (f > 0.01f) {
             sheen.setShader(new LinearGradient(0, cell.top, 0, cell.top + cell.height() * 0.5f,
                     Ui.alpha(0xFFFFFFFF, 0.1f * fc), 0x00FFFFFF, Shader.TileMode.CLAMP));
-            c.drawRect(cell, sheen);
+            c.drawRoundRect(cell, r, r, sheen);
         }
         if (fc < 0.99f) {
             veil.setColor(Ui.alpha(0xFF000000, 0.08f * (1 - fc)));
-            c.drawRect(cell, veil);
+            c.drawRoundRect(cell, r, r, veil);
         }
-        c.restore();
         border.setColor(0x14FFFFFF);
         c.drawRoundRect(cell, r, r, border);
         if (f > 0.01f) {
@@ -2568,7 +2681,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
                     tmp.set(cell);
                     tmp.offset(0, 8 * k * focus);
                     shadow.setColor(Ui.alpha(0xFF000000, tone(0.22f, 0.4f) * focus));
-                    c.drawRoundRect(tmp, rr, rr, shadow);
+                    shadows.draw(c, tmp, rr, SHADOW_BLUR * k, shadow);
                 }
                 fill.setShader(null);
                 fill.setColor(Ui.alpha(0xFFFFFFFF, focus));
@@ -2615,27 +2728,22 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         tmp.set(-bw / 2, -bh / 2, bw / 2, bh / 2);
         tmp.offset(0, (10 + 14 * f) * k);
         shadowDeep.setColor(Ui.alpha(0xFF000000, tone(0.14f, 0.32f) + tone(0.2f, 0.28f) * f));
-        c.drawRoundRect(tmp, r0, r0, shadowDeep);
+        shadows.draw(c, tmp, r0, DEEP_BLUR * k, shadowDeep);
         c.restore();
-        clip.reset();
-        clip.addRoundRect(cell, r, r, Path.Direction.CW);
-        c.save();
-        c.clipPath(clip);
         Backdrop b = p == null ? null : recs.backdrop(p);
         Bitmap img = b == null ? null : (i == 0 ? b.wide : b.tall);
         if (img != null) {
-            c.drawBitmap(img, null, cell, bitmapPaint);
+            roundImage(c, img, cell, r);
         } else {
             fill.setShader(null);
             fill.setColor(tone(0xFFDADADF, 0xFF2C2C2E));
-            c.drawRect(cell, fill);
+            c.drawRoundRect(cell, r, r, fill);
         }
         if (f > 0.01f) {
             sheen.setShader(new LinearGradient(cell.left, cell.top, cell.left + cell.width() * 0.5f, cell.bottom,
                     Ui.alpha(0xFFFFFFFF, 0.22f * f), 0x00FFFFFF, Shader.TileMode.CLAMP));
-            c.drawRect(cell, sheen);
+            c.drawRoundRect(cell, r, r, sheen);
         }
-        c.restore();
         if (f > 0.01f) {
             rim.setShader(new LinearGradient(0, cell.top, 0, cell.bottom,
                     Ui.alpha(0xFFFFFFFF, 0.9f * f), Ui.alpha(0xFFFFFFFF, 0.35f * f), Shader.TileMode.CLAMP));
@@ -2663,7 +2771,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             tmp.set(cell);
             tmp.offset(0, (6 + 8 * f) * k);
             shadow.setColor(Ui.alpha(0xFF000000, tone(0.1f, 0.3f) + tone(0.14f, 0.2f) * f));
-            c.drawRoundRect(tmp, rad, rad, shadow);
+            shadows.draw(c, tmp, rad, SHADOW_BLUR * k, shadow);
             scene.liquid(c, cell, rad, tone(0xFFFFFFFF, SMOKE), tone(0.55f, 0.5f), tone(0.02f, 0.01f), 12 * k, 8 * k,
                     tone(0.6f, 0.45f), 1 - f);
             if (f > 0.01f) {

@@ -7,12 +7,15 @@ import android.graphics.Paint;
 import android.graphics.Rect;
 import android.graphics.RectF;
 import android.graphics.Typeface;
+import android.os.Build;
 
 import java.io.IOException;
 import java.io.InputStream;
 import java.text.SimpleDateFormat;
 import java.util.Date;
+import java.util.HashMap;
 import java.util.Locale;
+import java.util.function.Supplier;
 
 /**
  * Fonts and text for the home screen, the screensaver and the settings. Font: Inter (variable, assets/fonts, SIL OFL),
@@ -22,6 +25,8 @@ import java.util.Locale;
 final class Ui {
     private Ui() {}
 
+    /** Android 9 to 11: older TVs and boxes, whose GPUs need the cheaper drawing paths (Shadows, rounded images). */
+    static final boolean LEGACY = Build.VERSION.SDK_INT < 31;
     static final Locale PT = new Locale("pt", "BR");
     /** English, Portuguese or Spanish, from the settings or, with "auto", the TV's own language. */
     static volatile String language = language();
@@ -154,8 +159,27 @@ final class Ui {
 
     /** "5:21" (sunrise and sunset; in English, "5:21 AM"). */
     static String time(long at) {
-        return en ? new SimpleDateFormat("h:mm a", Locale.US).format(new Date(at))
-                : new SimpleDateFormat("H:mm", locale()).format(new Date(at));
+        return once("time", at, () -> en ? new SimpleDateFormat("h:mm a", Locale.US).format(new Date(at))
+                : new SimpleDateFormat("H:mm", locale()).format(new Date(at)));
+    }
+
+    private static final HashMap<String, String> FORMATTED = new HashMap<>();
+
+    /**
+     * A formatted value, made once per language: the bottom drawer is redrawn on every frame of its focus animation,
+     * and SimpleDateFormat and String.format there cost ~10 ms a frame on a Mi Box 3.
+     */
+    static String once(String kind, double value, Supplier<String> format) {
+        String key = kind + '|' + language + '|' + value;
+        synchronized (FORMATTED) {
+            String s = FORMATTED.get(key);
+            if (s == null) {
+                if (FORMATTED.size() > 200) FORMATTED.clear();
+                s = format.get();
+                FORMATTED.put(key, s);
+            }
+            return s;
+        }
     }
 
     /** "domingo, 18 de outubro" (lowercase, like the iPhone in Portuguese); "Sunday, October 18" in English. */

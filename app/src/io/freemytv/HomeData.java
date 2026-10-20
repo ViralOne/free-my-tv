@@ -295,7 +295,8 @@ final class HomeData {
     static String brl(double v) {
         String symbol = currencySymbol();
         if (Double.isNaN(v)) return symbol + "—";
-        return v >= 1000 ? String.format(locale(), symbol + "%,.0f", v) : String.format(locale(), symbol + "%.2f", v);
+        return Ui.once("brl", v, () -> v >= 1000 ? String.format(locale(), symbol + "%,.0f", v)
+                : String.format(locale(), symbol + "%.2f", v));
     }
 
     /** The weather in words, from Open-Meteo's WMO code. */
@@ -364,12 +365,12 @@ final class HomeData {
     /** "+1.2%" / "−0.8%" (a real minus sign). */
     static String change(double v) {
         if (Double.isNaN(v)) return "";
-        return (v >= 0 ? "+" : "−") + String.format(locale(), "%.1f%%", Math.abs(v));
+        return Ui.once("change", v, () -> (v >= 0 ? "+" : "−") + String.format(locale(), "%.1f%%", Math.abs(v)));
     }
 
     static String hour(long at) {
-        return Ui.en ? new SimpleDateFormat("h a", Locale.US).format(new java.util.Date(at))
-                : new SimpleDateFormat(Ui.es ? "HH:mm" : "HH'h'", Ui.locale()).format(new java.util.Date(at));
+        return Ui.once("hour", at, () -> Ui.en ? new SimpleDateFormat("h a", Locale.US).format(new java.util.Date(at))
+                : new SimpleDateFormat(Ui.es ? "HH:mm" : "HH'h'", Ui.locale()).format(new java.util.Date(at)));
     }
 
     /** How long ago the data was fetched, if it's stale (no internet): "12 min ago". */

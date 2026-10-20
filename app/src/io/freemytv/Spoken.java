@@ -86,7 +86,7 @@ final class Spoken extends AccessibilityNodeProvider {
 
     @Override public AccessibilityNodeInfo createAccessibilityNodeInfo(int id) {
         if (id == HOST_VIEW_ID) {
-            AccessibilityNodeInfo info = new AccessibilityNodeInfo(host);
+            AccessibilityNodeInfo info = AccessibilityNodeInfo.obtain(host);
             host.onInitializeAccessibilityNodeInfo(info);
             ids.clear();
             source.items(ids);
@@ -96,7 +96,7 @@ final class Spoken extends AccessibilityNodeProvider {
         String text = source.text(id);
         if (text.isEmpty() || !source.bounds(id, bounds)) return null;
         boolean focused = id == source.focused();
-        AccessibilityNodeInfo info = new AccessibilityNodeInfo(host, id);
+        AccessibilityNodeInfo info = AccessibilityNodeInfo.obtain(host, id);
         info.setPackageName(host.getContext().getPackageName());
         info.setClassName(Button.class.getName());
         info.setParent(host);
@@ -163,7 +163,7 @@ final class Spoken extends AccessibilityNodeProvider {
     private void send(int id, int type) {
         ViewParent parent = host.getParent();
         if (parent == null || !manager.isEnabled()) return;
-        AccessibilityEvent e = new AccessibilityEvent(type);
+        AccessibilityEvent e = AccessibilityEvent.obtain(type);
         if (id == HOST_VIEW_ID) {
             host.onInitializeAccessibilityEvent(e);
             e.setContentChangeTypes(AccessibilityEvent.CONTENT_CHANGE_TYPE_SUBTREE);
