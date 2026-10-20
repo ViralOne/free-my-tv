@@ -149,6 +149,9 @@ final class Hikari {
             return null;
         }
         p.meta = meta(m, item != null);
+        if (!banner.isEmpty()) p.banner = banner;
+        JSONObject w = m.optJSONObject("watch");
+        if (w != null && w.optInt("total") > 0) p.progress = Math.min(1f, (float) w.optInt("played") / w.optInt("total"));
         return p;
     }
 
@@ -165,8 +168,8 @@ final class Hikari {
         JSONArray genres = m.optJSONArray("genres");
         if (genres != null && genres.length() > 0) parts.add(genres.optString(0));
         if (m.optInt("seasonYear") > 0) parts.add(String.valueOf(m.optInt("seasonYear")));
-        parts.add(owned ? Ui.tr("Na sua biblioteca", "In your library", "En tu biblioteca")
-                : Ui.tr("OK para pedir", "OK to request", "OK para pedir"));
+        // What OK does is said apart (Wholphin / Request under the card), so only "in your library" here.
+        if (owned) parts.add(Ui.tr("Na sua biblioteca", "In your library", "En tu biblioteca"));
         return String.join(" · ", parts);
     }
 

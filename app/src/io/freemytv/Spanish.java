@@ -22,6 +22,7 @@ final class Spanish {
             case "24h change": return "variación en 24 h";
             case "For You": return "Para ti";
             case "Cards per tab": return "Tarjetas por pestaña";
+            case "The other app buttons: the TV itself controls them.": return "Los otros botones de apps: el propio TV los controla.";
             case "Jellyfin profile": return "Perfil de Jellyfin";
             case "Couldn't open ": return "No se pudo abrir ";
             case " of ": return " de ";

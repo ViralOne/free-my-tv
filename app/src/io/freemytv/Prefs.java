@@ -16,7 +16,15 @@ final class Prefs {
 
     /** Remote keys we handle, with the app each opens until the user picks another. Codes read from the TCL's log. */
     static final int KEY_NETFLIX = 4062, KEY_YOUTUBE = 190, KEY_PRIME = 4099, KEY_TCL_CHANNEL = 4020;
-    static final int[] KEYS = {KEY_NETFLIX, KEY_YOUTUBE, KEY_PRIME, KEY_TCL_CHANNEL};
+    /** Philips' Prime Video button (KEYCODE_AMAZON_PRIME_VIDEO, read from the TV's GlobalKey log). */
+    static final int KEY_PHILIPS_PRIME = 788;
+    private static final int[] TCL_KEYS = {KEY_NETFLIX, KEY_YOUTUBE, KEY_PRIME, KEY_TCL_CHANNEL};
+    private static final int[] PHILIPS_KEYS = {KEY_PHILIPS_PRIME};
+
+    /** This TV's remote keys we handle (none on brands we haven't read the codes of). */
+    static int[] keys() {
+        return RemoteKeys.philips() ? PHILIPS_KEYS : RemoteKeys.tcl() ? TCL_KEYS : new int[0];
+    }
 
     /** Bumped by every change: screens compare it to know when to redraw. */
     static volatile int version;
@@ -129,7 +137,8 @@ final class Prefs {
         switch (keyCode) {
             case KEY_NETFLIX: return "com.netflix.ninja";
             case KEY_YOUTUBE: return "com.google.android.youtube.tv";
-            case KEY_PRIME: return "com.amazon.amazonvideo.livingroom";
+            case KEY_PRIME:
+            case KEY_PHILIPS_PRIME: return "com.amazon.amazonvideo.livingroom";
             case KEY_TCL_CHANNEL: return "";
             default: return "";
         }

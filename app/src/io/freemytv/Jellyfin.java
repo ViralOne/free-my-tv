@@ -92,6 +92,7 @@ final class Jellyfin {
             meta.append(o.optString("Name"));
         }
         JSONObject user = o.optJSONObject("UserData");
+        if (user != null) p.progress = (float) Math.max(0, Math.min(1, user.optDouble("PlayedPercentage", 0) / 100));
         long left = (o.optLong("RunTimeTicks") - (user == null ? 0 : user.optLong("PlaybackPositionTicks"))) / 600_000_000L;
         if (user != null && user.optLong("PlaybackPositionTicks") > 0 && left > 0) {
             if (meta.length() > 0) meta.append(" · ");
@@ -266,7 +267,8 @@ final class Jellyfin {
                     .put("meta", p.meta).put("backdrop", p.backdrop).put("image", p.image)
                     .put("seriesId", p.seriesId == null ? "" : p.seriesId).put("seasonId", p.seasonId == null ? "" : p.seasonId)
                     .put("season", p.season).put("episode", p.episode).put("section", p.section == null ? "" : p.section)
-                    .put("playId", p.playId == null ? "" : p.playId).put("positionMs", p.positionMs));
+                    .put("playId", p.playId == null ? "" : p.playId).put("positionMs", p.positionMs)
+                    .put("banner", p.banner == null ? "" : p.banner).put("progress", p.progress));
         }
         return a;
     }
@@ -295,6 +297,8 @@ final class Jellyfin {
             p.section = o.optString("section").isEmpty() ? null : o.optString("section");
             p.playId = o.optString("playId").isEmpty() ? null : o.optString("playId");
             p.positionMs = o.optLong("positionMs");
+            p.banner = o.optString("banner").isEmpty() ? null : o.optString("banner");
+            p.progress = (float) o.optDouble("progress", 0);
             out.add(p);
         }
         return out;

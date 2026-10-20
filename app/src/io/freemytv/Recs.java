@@ -47,6 +47,9 @@ final class Recs {
         String title, backdrop, meta = "", app, pkg;
         String poster;          // TMDB's poster (portrait), for the rows below the first
         String netflixId;       // Netflix's id for the title (from Wikidata), so OK opens it there, not Netflix's home
+        String banner;          // a landscape picture for the card when it widens (anime: AniList's banner)
+        float progress;         // how much you've watched, 0 to 1 (Jellyfin), for the bar on the card
+        String detail;          // the line under a widened card (details and what OK opens), set with the rows
         boolean netflixChecked; // asked Wikidata already (it doesn't know every title)
         // The title and details shortened to fit a card, cached (shortening on every frame of a scroll made it stutter)
         final String[] fit = new String[2];
@@ -143,6 +146,11 @@ final class Recs {
     static final int POSTER_W = 268, POSTER_H = 402;
     /** Posters kept ready (GPU, ~430 KB each): the ~24 that fit on screen, plus the next few. */
     private static final int MAX_POSTERS = 32;
+    /** The landscape picture of a card widened by focus (720 × 405, ~1.1 MB): only the few around the focus. */
+    static final int STILL_W = 720, STILL_H = 405;
+    private static final int MAX_STILLS = 8;
+    private final Map<String, Bitmap> stills = new LinkedHashMap<>(16, 0.75f, true);
+    private final java.util.Set<String> stillPending = new java.util.HashSet<>();
     private final ExecutorService posterIo = Executors.newSingleThreadExecutor();
     private final Map<String, Bitmap> posters = new LinkedHashMap<>(64, 0.75f, true);   // least recently drawn first
     private final java.util.Set<String> posterPending = new java.util.HashSet<>();
@@ -371,6 +379,71 @@ final class Recs {
      * A smaller copy of the title's image for its poster (TMDB's 780-wide, Jellyfin's at 780), in its own folder of
      * up to 150, so the rows don't push the large images out.
      */
+    /**
+     * The title's landscape picture for its card when focus widens it, or null: loads it in the background (the
+     * rows redraw when it's ready). TMDB's backdrop at 780, the anime's banner, else its cover.
+     */
+    Bitmap still(Pick p) {
+        if (p == null || p.backdrop == null) return null;
+        String key = "still" + p.backdrop.replace("/", "");
+        synchronized (stills) {
+            Bitmap b = stills.get(key);
+            if (b != null) return b;
+            if (!stillPending.add(key)) return null;
+        }
+        posterIo.execute(() -> {
+            try {
+                File dir = new File(context.getCacheDir(), "stills");
+                File f = new File(dir, key);
+                if (!f.exists()) {
+                    //noinspection ResultOfMethodCallIgnored
+                    dir.mkdirs();
+                    String url = p.banner != null ? p.banner : p.image == null ? IMAGES_SMALL + p.backdrop : p.image;
+                    HttpURLConnection c = url.startsWith("https://") ? (HttpURLConnection) new URL(url).openConnection()
+                            : Jellyfin.open(url.replace("maxWidth=1920", "maxWidth=780"));
+                    c.setConnectTimeout(8000);
+                    c.setReadTimeout(20000);
+                    File part = new File(f.getPath() + ".part");
+                    try (InputStream in = c.getInputStream(); FileOutputStream out = new FileOutputStream(part)) {
+                        byte[] buffer = new byte[16384];
+                        int n;
+                        while ((n = in.read(buffer)) > 0) out.write(buffer, 0, n);
+                    } finally {
+                        c.disconnect();
+                    }
+                    if (!part.renameTo(f)) throw new IOException("couldn't save the picture");
+                    prune(dir, 40);
+                }
+                BitmapFactory.Options bounds = new BitmapFactory.Options();
+                bounds.inJustDecodeBounds = true;
+                BitmapFactory.decodeFile(f.getPath(), bounds);
+                BitmapFactory.Options opts = new BitmapFactory.Options();
+                opts.inSampleSize = 1;
+                while (bounds.outWidth / (opts.inSampleSize * 2) >= STILL_W) opts.inSampleSize *= 2;
+                Bitmap src = BitmapFactory.decodeFile(f.getPath(), opts);
+                if (src == null) throw new IOException("unreadable picture");
+                float ratio = (float) STILL_W / STILL_H;
+                int cw = Math.min(src.getWidth(), Math.round(src.getHeight() * ratio));
+                int ch = Math.min(src.getHeight(), Math.round(cw / ratio));
+                Bitmap cut = Bitmap.createBitmap(src, (src.getWidth() - cw) / 2, (src.getHeight() - ch) / 2, cw, ch);
+                Bitmap out = Bitmap.createScaledBitmap(cut, STILL_W, STILL_H, true);
+                if (cut != src && cut != out) cut.recycle();
+                if (src != out) src.recycle();
+                Bitmap gpu = Backdrop.gpu(out);
+                synchronized (stills) {
+                    stills.put(key, gpu);
+                    while (stills.size() > MAX_STILLS) stills.remove(stills.keySet().iterator().next());
+                }
+                main.post(() -> { for (Listener l : new ArrayList<>(listeners)) l.onPoster(); });
+            } catch (IOException | RuntimeException | OutOfMemoryError e) {
+                AppLog.w("still: " + e.getMessage());
+            } finally {
+                synchronized (stills) { stillPending.remove(key); }
+            }
+        });
+        return null;
+    }
+
     /** TMDB's real poster when it has one, else a cut of the title's image. */
     private static String posterKey(Pick p) {
         return p.poster != null ? "poster" + p.poster.replace("/", "") : p.backdrop.replace("/", "");

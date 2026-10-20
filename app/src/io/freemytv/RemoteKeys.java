@@ -7,7 +7,7 @@ import android.view.InputDevice;
 import android.view.KeyEvent;
 
 /**
- * The remote's app buttons on TCL TVs. The stock home screen opens the apps for Netflix, YouTube and Prime (and TCL
+ * The remote's app buttons on TCL TVs (and Philips' Prime Video button). The stock home screen opens the apps for Netflix, YouTube and Prime (and TCL
  * Channel); with it off, the keys still arrive, so we open the app the person picked (Settings > Remote Buttons).
  * Disney and Globoplay are opened by the system itself, so they are not listed. The YouTube button (BUTTON_3) never
  * reaches an app's window; only the accessibility service's key filter (RemoteKeyService) sees it.
@@ -15,9 +15,18 @@ import android.view.KeyEvent;
 final class RemoteKeys {
     private RemoteKeys() {}
 
-    /** The key codes are TCL's: on other brands they can be other buttons, so nothing here runs there. */
+    /** Only brands whose key codes we've read: on others the same codes can be other buttons. */
     static boolean supported() {
+        return tcl() || philips();
+    }
+
+    static boolean tcl() {
         return "TCL".equalsIgnoreCase(Build.MANUFACTURER) || "TCL".equalsIgnoreCase(Build.BRAND);
+    }
+
+    /** Philips (TP Vision): its own GlobalKey app opens Prime Video; we take that button first when it's remapped. */
+    static boolean philips() {
+        return "Philips".equalsIgnoreCase(Build.BRAND) || "TPV".equalsIgnoreCase(Build.MANUFACTURER);
     }
 
     /** Opens the app for this key on its first press. True if the key is ours and in use (it is then consumed). */
@@ -28,7 +37,7 @@ final class RemoteKeys {
         if ((source & InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD
                 || (source & InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK) return false;
         boolean ours = false;
-        for (int key : Prefs.KEYS) ours |= key == e.getKeyCode();
+        for (int key : Prefs.keys()) ours |= key == e.getKeyCode();
         if (!ours) return false;
         String pkg = Prefs.keyApp(e.getKeyCode());
         if (pkg.isEmpty()) return false;   // "Nothing": the key goes on as if we weren't here

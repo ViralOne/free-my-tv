@@ -108,7 +108,9 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     // name sits once the page has scrolled to it.
     private static final int MAX_ROWS = 3;
     // Posters 2:3 at 248 × 372 with the tvOS 40 px gap: six and a half across at 3 m, the cut one saying "there's more".
+    // The focused one widens to 16:9 (R_WIDE) to show its picture and details; the ones after it slide over.
     private static final float R_TOP = 880, R_STEP = 540, R_W = 248, R_H = 372, R_GAP = 40, R_VIEW = 120;
+    private static final float R_WIDE = R_H * 16 / 9;
 
     private final Activity activity;
     private final Scene scene = new Scene();
@@ -173,6 +175,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private boolean rowsDirty;
     private TextPaint rowTitle2;
     private final TextPaint cardTitlePaint = new TextPaint(Paint.ANTI_ALIAS_FLAG);
+    private final Rect srcRect = new Rect();
     private final List<HomeApps.Item> lightButtons = new ArrayList<>();
     private Paint lTitle, lTab, lTabOn, lCardTitle, lCardMeta, lQuote, lTip, lSection, lRowName, lAction;
     // The title waiting for a second OK to be requested (and when the first OK came), and what sends it
@@ -659,9 +662,9 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         boolean rowsMoving = false;
         for (int r = 0; r < rowCount; r++) {
             Row row = rowSlots[r];
-            rowsMoving |= step(row.focus, dt);
-            if (row.scroll.step(dt)) {
-                placeRow(row);
+            boolean widening = step(row.focus, dt), scrolling = row.scroll.step(dt);
+            if (widening || scrolling) {
+                placeRow(row);      // the widths follow the focus springs, so the cards after it move too
                 rowsMoving = true;
             }
         }
@@ -2472,6 +2475,12 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
                 row.index = Math.min(row.index, list.size() - 1);
             }
             row.label = Hikari.KIND.equals(kind) ? Hikari.sectionLabel(sec) : rowLabel(sec);
+            for (Recs.Pick p : row.picks) {
+                // Under a widened card: its details, then what OK opens (built here, not on every frame).
+                String action = actionLabel(p), meta = p.meta == null ? "" : p.meta;
+                if (!meta.isEmpty() && !action.isEmpty() && meta.endsWith(action)) action = "";
+                p.detail = meta.isEmpty() ? action : action.isEmpty() ? meta : meta + " · " + action;
+            }
             n++;
         }
         for (int i = n; i < MAX_ROWS; i++) {
@@ -2510,21 +2519,24 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         rowsDirty = true;
     }
 
+    /** Where the cards are now: each as wide as its focus has widened it, side by side, minus the scroll. */
     private void placeRow(Row row) {
-        float dx = -row.scroll.value * 1000 * k;
+        float x = MARGIN * k - row.scroll.value * 1000 * k;
         for (int i = 0; i < MAX_CARDS; i++) {
-            row.rects[i].set(row.base[i]);
-            row.rects[i].offset(dx, 0);
+            float wide = (R_W + (R_WIDE - R_W) * Ui.clamp(row.focus[i].value)) * k;
+            row.rects[i].set(x, row.base[i].top, x + wide, row.base[i].bottom);
+            x += wide + R_GAP * k;
         }
     }
 
     /** Like aimCardScroll: just enough for the focused card to sit inside the margins. */
     private boolean aimRowScroll(Row row, boolean snap) {
         if (row.index >= MAX_CARDS) return false;
-        RectF b = row.base[row.index];
+        // Where the focused card ends up once widened (the ones before it narrow).
+        float left = (MARGIN + row.index * (R_W + R_GAP)) * k, right = left + R_WIDE * k;
         float s = row.scroll.target * 1000 * k;
-        if (b.right - s > CONTENT_R * k) s = b.right - CONTENT_R * k;
-        if (b.left - s < MARGIN * k) s = b.left - MARGIN * k;
+        if (right - s > CONTENT_R * k) s = right - CONTENT_R * k;
+        if (left - s < MARGIN * k) s = left - MARGIN * k;
         float target = Math.max(0, s) / (1000 * k);
         boolean changed = target != row.scroll.target;
         row.scroll.target = target;
@@ -2578,41 +2590,75 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         }
     }
 
-    /** A poster card: grows 8% and rises with focus, like the cards above; the title and what OK opens below it. */
+    /**
+     * A card of a row: a poster, which with focus widens to 16:9 and turns into the title's picture (the poster fades
+     * out as the picture fades in), rises a little and lights its border; the title below, then what OK opens (with
+     * focus: the details too). A bar at the bottom shows how much you've watched.
+     */
     private void drawPoster(Canvas c, Row row, int i) {
         RectF base = row.rects[i];
         if (base.right < -60 * k || base.left > w + 60 * k) return;
         Recs.Pick p = row.picks.get(i);
-        float v = row.focus[i].value, f = Ui.clamp(v), s = 1 + 0.08f * v;
-        float bw = base.width(), bh = base.height(), r = 14 * k * s;
-        float cx = base.centerX(), cy = base.centerY() - 6 * k * v;
-        cell.set(cx - bw * s / 2, cy - bh * s / 2, cx + bw * s / 2, cy + bh * s / 2);
+        float v = row.focus[i].value, f = Ui.clamp(v), r = 14 * k;
+        cell.set(base);
+        cell.offset(0, -8 * k * v);
         tmp.set(cell);
         tmp.offset(0, (8 + 12 * f) * k);
         shadowDeep.setColor(Ui.alpha(0xFF000000, tone(0.12f, 0.3f) + tone(0.18f, 0.26f) * f));
-        c.drawRoundRect(tmp, r, r, shadowDeep);
+        shadows.draw(c, tmp, r, DEEP_BLUR * k, shadowDeep);
         clip.reset();
         clip.addRoundRect(cell, r, r, Path.Direction.CW);
         c.save();
         c.clipPath(clip);
-        Bitmap img = recs.poster(p);
-        if (img != null) {
-            c.drawBitmap(img, null, cell, bitmapPaint);
-        } else {
+        Bitmap poster = recs.poster(p), still = f > 0.02f ? recs.still(p) : null;
+        if (poster == null && still == null) {
             fill.setShader(null);
             fill.setColor(tone(0xFFDADADF, 0xFF2C2C2E));
             c.drawRect(cell, fill);
         }
+        if (poster != null && (still == null || f < 0.98f)) drawCropped(c, poster, cell, still == null ? 1 : 1 - f);
+        if (still != null) drawCropped(c, still, cell, f);
+        if (p.progress > 0.01f) drawProgress(c, cell, p.progress);
         c.restore();
         if (f > 0.01f) {
             rim.setShader(null);
             rim.setColor(Ui.alpha(0xFFFFFFFF, 0.8f * f));
             c.drawRoundRect(cell, r, r, rim);
         }
-        float y = base.bottom + (40 + 10 * f) * k;
-        c.drawText(fit(p, 0, p.title, rowTitle2, bw), base.left, y, rowTitle2);
-        String action = actionLabel(p);
-        if (!action.isEmpty()) c.drawText(action, base.left, y + 33 * k, lAction);
+        float y = base.bottom + (40 + 4 * f) * k;
+        c.drawText(fit(p, 0, p.title, rowTitle2, base.width()), base.left, y, rowTitle2);
+        String line = f > 0.5f && p.detail != null ? p.detail : actionLabel(p);
+        if (!line.isEmpty()) {
+            cardTitlePaint.set(lAction);
+            c.drawText(f > 0.5f ? fit(p, 1, line, cardTitlePaint, base.width()) : line, base.left, y + 33 * k, lAction);
+        }
+    }
+
+    /** The image cut to the cell's shape (center), at `alpha`: the card changes shape while it widens. */
+    private void drawCropped(Canvas c, Bitmap img, RectF cell, float alpha) {
+        float want = cell.width() / cell.height(), have = (float) img.getWidth() / img.getHeight();
+        if (have > want) {
+            int cw = Math.round(img.getHeight() * want);
+            srcRect.set((img.getWidth() - cw) / 2, 0, (img.getWidth() + cw) / 2, img.getHeight());
+        } else {
+            int ch = Math.round(img.getWidth() / want);
+            srcRect.set(0, (img.getHeight() - ch) / 2, img.getWidth(), (img.getHeight() + ch) / 2);
+        }
+        bitmapPaint.setAlpha(Math.round(255 * alpha));
+        c.drawBitmap(img, srcRect, cell, bitmapPaint);
+        bitmapPaint.setAlpha(255);
+    }
+
+    /** How much you've watched: a thin white bar on a dim track, inside the bottom of the picture. */
+    private void drawProgress(Canvas c, RectF cell, float progress) {
+        float inset = 14 * k, height = 6 * k, bottom = cell.bottom - inset;
+        tmp.set(cell.left + inset, bottom - height, cell.right - inset, bottom);
+        fill.setShader(null);
+        fill.setColor(0x66000000);
+        c.drawRoundRect(tmp, height / 2, height / 2, fill);
+        tmp.right = tmp.left + Math.max(height, tmp.width() * progress);
+        fill.setColor(0xF2FFFFFF);
+        c.drawRoundRect(tmp, height / 2, height / 2, fill);
     }
 
     private void selectTab(int index) {
@@ -2750,6 +2796,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             c.drawRoundRect(cell, r, r, rim);
         }
         if (p == null) return;
+        if (p.progress > 0.01f) drawProgress(c, cell, p.progress);
         cardTitlePaint.set(lCardTitle);
         c.drawText(fit(p, 0, p.title, cardTitlePaint, bw), base.left, base.bottom + 46 * k, lCardTitle);
         if (i == 0 && p.meta != null && !p.meta.isEmpty()) {

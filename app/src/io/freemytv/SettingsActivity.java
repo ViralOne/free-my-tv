@@ -325,7 +325,7 @@ public class SettingsActivity extends Activity {
                 case HOME_SETTINGS: return settingLabels().length;
                 case PICKER: return Math.min(PICK_VISIBLE, pickLabels.size());
                 case SHELF_EDIT: return Math.min(PICK_VISIBLE, shelfRows.size());
-                default: return Prefs.KEYS.length;
+                default: return Prefs.keys().length;
             }
         }
 
@@ -684,14 +684,15 @@ public class SettingsActivity extends Activity {
         }
 
         private String[] keyLabels() {
+            if (RemoteKeys.philips()) return new String[] {Ui.tr("Botão Prime Video", "Prime Video button")};
             return new String[] {Ui.tr("Botão Netflix", "Netflix button"), Ui.tr("Botão YouTube", "YouTube button"),
                     Ui.tr("Botão Prime Video", "Prime Video button"), Ui.tr("Botão TCL Channel", "TCL Channel button")};
         }
 
         private String[] keyValues() {
-            String[] v = new String[Prefs.KEYS.length];
+            String[] v = new String[Prefs.keys().length];
             for (int i = 0; i < v.length; i++) {
-                int at = appPkgs.indexOf(Prefs.keyApp(Prefs.KEYS[i]));
+                int at = appPkgs.indexOf(Prefs.keyApp(Prefs.keys()[i]));
                 v[i] = at >= 0 ? appLabels.get(at) : Ui.tr("Não instalado", "Not installed");
             }
             return v;
@@ -723,9 +724,9 @@ public class SettingsActivity extends Activity {
         private void adjust(int dir) {
             if (screen == REMOTE_KEYS) {
                 int n = appPkgs.size();
-                int at = appPkgs.indexOf(Prefs.keyApp(Prefs.KEYS[focus]));
+                int at = appPkgs.indexOf(Prefs.keyApp(Prefs.keys()[focus]));
                 int next = at < 0 ? (dir > 0 ? 0 : n - 1) : (at + dir + n) % n;
-                Prefs.setKeyApp(Prefs.KEYS[focus], appPkgs.get(next));
+                Prefs.setKeyApp(Prefs.keys()[focus], appPkgs.get(next));
                 return;
             }
             int[] rows = settingRows();
@@ -863,7 +864,7 @@ public class SettingsActivity extends Activity {
             pickFor = which;
             pickLabels.clear();
             pickLabels.addAll(appLabels);
-            pickCurrent = appPkgs.indexOf(Prefs.keyApp(Prefs.KEYS[which - 1]));
+            pickCurrent = appPkgs.indexOf(Prefs.keyApp(Prefs.keys()[which - 1]));
             int visible = Math.min(PICK_VISIBLE, pickLabels.size());
             int at = Math.max(0, pickCurrent);
             pickScroll = Math.max(0, Math.min(at - 3, pickLabels.size() - visible));
@@ -919,7 +920,9 @@ public class SettingsActivity extends Activity {
             float hy = (LIST_TOP + 20 + labels.length * (LIST_ROW_H + LIST_ROW_GAP) + 36) * k;
             c.drawText(Ui.tr("OK ou as setas mudam o valor.", "OK or the arrows change the value."), LIST_X * k + 30 * k, hy, hint);
             if (keys) {
-                c.drawText(RemoteKeys.supported() ? Ui.tr("Disney e Globoplay: a própria TV controla esses botões.",
+                c.drawText(RemoteKeys.philips() ? Ui.tr("Os outros botões de apps: a própria TV os controla.",
+                        "The other app buttons: the TV itself controls them.")
+                        : RemoteKeys.supported() ? Ui.tr("Disney e Globoplay: a própria TV controla esses botões.",
                         "Disney and Globoplay: the TV itself controls those buttons.")
                         : Ui.tr("Esses são os botões do controle da TCL: nesta TV, os botões funcionam como sempre.",
                         "These are the TCL remote's buttons: on this TV, the buttons work as they always did."), LIST_X * k + 30 * k, hy + 38 * k, hint);
@@ -938,7 +941,7 @@ public class SettingsActivity extends Activity {
                 focus = 0;
             } else if (screen == PICKER) {
                 int at = pickScroll + focus;
-                Prefs.setKeyApp(Prefs.KEYS[pickFor - 1], appPkgs.get(at));
+                Prefs.setKeyApp(Prefs.keys()[pickFor - 1], appPkgs.get(at));
                 focus = pickFor - 1;
                 screen = REMOTE_KEYS;
             } else if (screen == SHELF_EDIT) {
