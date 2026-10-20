@@ -150,6 +150,8 @@ final class Hikari {
         }
         p.meta = meta(m, item != null);
         if (!banner.isEmpty()) p.banner = banner;
+        String story = m.optString("synopsis", "");
+        if (!story.isEmpty() && !story.equals("null")) p.synopsis = story.length() > 400 ? story.substring(0, 400) : story;
         JSONObject w = m.optJSONObject("watch");
         if (w != null && w.optInt("total") > 0) p.progress = Math.min(1f, (float) w.optInt("played") / w.optInt("total"));
         return p;

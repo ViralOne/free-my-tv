@@ -48,12 +48,16 @@ final class Recs {
         String poster;          // TMDB's poster (portrait), for the rows below the first
         String netflixId;       // Netflix's id for the title (from Wikidata), so OK opens it there, not Netflix's home
         String banner;          // a landscape picture for the card when it widens (anime: AniList's banner)
+        String logo;            // TMDB's title logo (transparent PNG), drawn on the widened card's picture
+        String synopsis;        // anime: the story, on the widened card next to the cover
+        Object layout;          // the story laid out for the card (HomeView's StaticLayout), and for what width
+        float layoutFor;
         float progress;         // how much you've watched, 0 to 1 (Jellyfin), for the bar on the card
         String detail;          // the line under a widened card (details and what OK opens), set with the rows
         boolean netflixChecked; // asked Wikidata already (it doesn't know every title)
         // The title and details shortened to fit a card, cached (shortening on every frame of a scroll made it stutter)
-        final String[] fit = new String[2];
-        final float[] fitFor = new float[2];
+        final String[] fit = new String[3];
+        final float[] fitFor = new float[3];
         boolean detailed;
         // Your own servers ("jellyfin" and "anime" kinds): the Jellyfin item to open in Wholphin (null: not in the
         // library), and the image: a path on the Jellyfin server or a full https address (Hikari's AniList covers)
@@ -76,7 +80,7 @@ final class Recs {
     private static final String IMAGES_SMALL = "https://image.tmdb.org/t/p/w780", IMAGES_POSTER = "https://image.tmdb.org/t/p/w500";
     private static final long LIST_EVERY = 6 * 3600_000L;
     /** Bump when what is saved for each title changes (the saved list is discarded and fetched again). */
-    private static final int CACHE_VERSION = 5;
+    private static final int CACHE_VERSION = 6;
     private static final int MANHA = 0, TARDE = 1, NOITE = 2;
     static final String[] PERIOD_LABEL = {"PARA ESTA MANHÃ", "PARA ESTA TARDE", "PARA ESTA NOITE"};
     static final String[] PERIOD_LABEL_EN = {"THIS MORNING", "THIS AFTERNOON", "TONIGHT"};
@@ -151,6 +155,9 @@ final class Recs {
     private static final int MAX_STILLS = 8;
     private final Map<String, Bitmap> stills = new LinkedHashMap<>(16, 0.75f, true);
     private final java.util.Set<String> stillPending = new java.util.HashSet<>();
+    private final Map<String, Bitmap> blurs = new LinkedHashMap<>(64, 0.75f, true);
+    private final Map<String, Bitmap> logos = new LinkedHashMap<>(16, 0.75f, true);
+    private final java.util.Set<String> logoPending = new java.util.HashSet<>();
     private final ExecutorService posterIo = Executors.newSingleThreadExecutor();
     private final Map<String, Bitmap> posters = new LinkedHashMap<>(64, 0.75f, true);   // least recently drawn first
     private final java.util.Set<String> posterPending = new java.util.HashSet<>();
@@ -360,8 +367,12 @@ final class Recs {
                 Bitmap out = Bitmap.createScaledBitmap(cut, POSTER_W, POSTER_H, true);
                 if (cut != src && cut != out) cut.recycle();
                 if (src != out) src.recycle();
+                // A tiny copy, drawn stretched it reads as a blur: the anime's widened card's background.
+                Bitmap tiny = Bitmap.createScaledBitmap(out, 12, 18, true);
                 Bitmap gpu = Backdrop.gpu(out);
                 synchronized (posters) {
+                    blurs.put(key, tiny);
+                    while (blurs.size() > MAX_POSTERS) blurs.remove(blurs.keySet().iterator().next());
                     posters.put(key, gpu);
                     while (posters.size() > MAX_POSTERS) posters.remove(posters.keySet().iterator().next());
                 }
@@ -444,6 +455,48 @@ final class Recs {
         return null;
     }
 
+    /** The poster's tiny copy (ready with the poster), or null. */
+    Bitmap blur(Pick p) {
+        if (p == null || p.backdrop == null) return null;
+        synchronized (posters) { return blurs.get(posterKey(p)); }
+    }
+
+    /** The title's logo (TMDB's, 500 wide), or null: loads it in the background. */
+    Bitmap logo(Pick p) {
+        if (p == null || p.logo == null) return null;
+        String key = "logo" + p.logo.replace("/", "");
+        synchronized (logos) {
+            Bitmap b = logos.get(key);
+            if (b != null) return b;
+            if (!logoPending.add(key)) return null;
+        }
+        posterIo.execute(() -> {
+            try {
+                HttpURLConnection c = (HttpURLConnection) new URL("https://image.tmdb.org/t/p/w500" + p.logo).openConnection();
+                c.setConnectTimeout(8000);
+                c.setReadTimeout(20000);
+                Bitmap b;
+                try (InputStream in = c.getInputStream()) {
+                    b = BitmapFactory.decodeStream(in);
+                } finally {
+                    c.disconnect();
+                }
+                if (b == null) throw new IOException("unreadable logo");
+                Bitmap gpu = Backdrop.gpu(b);
+                synchronized (logos) {
+                    logos.put(key, gpu);
+                    while (logos.size() > MAX_STILLS) logos.remove(logos.keySet().iterator().next());
+                }
+                main.post(() -> { for (Listener l : new ArrayList<>(listeners)) l.onPoster(); });
+            } catch (IOException | RuntimeException | OutOfMemoryError e) {
+                AppLog.w("logo: " + e.getMessage());
+            } finally {
+                synchronized (logos) { logoPending.remove(key); }
+            }
+        });
+        return null;
+    }
+
     /** TMDB's real poster when it has one, else a cut of the title's image. */
     private static String posterKey(Pick p) {
         return p.poster != null ? "poster" + p.poster.replace("/", "") : p.backdrop.replace("/", "");
@@ -517,7 +570,10 @@ final class Recs {
         long stamp = sourceStamp();   // a new key, country or installed streaming-app set refetches
         boolean newKey = stamp != keyStamp;
         long sinceFail = now - failedAt;    // negative = the clock went back: don't wait
-        if (!newKey && failedAt != 0 && sinceFail >= 0 && sinceFail < 10 * 60_000L) return;
+        // After a failure, wait before asking TMDB again: a minute with nothing to show (a network blip shouldn't leave
+        // the tabs empty), else ten.
+        long wait = picks.isEmpty() ? 60_000L : 10 * 60_000L;
+        if (!newKey && failedAt != 0 && sinceFail >= 0 && sinceFail < wait) return;
         int p = period(now);
         boolean stale = newKey || p != period || now - listAt > LIST_EVERY || now < listAt || picks.isEmpty()
                 || !listLanguage.equals(Ui.language);
@@ -843,6 +899,7 @@ final class Recs {
                 + "?language=" + lang() + "&append_to_response=watch/providers,images&include_image_language=null," + Ui.language + ",en");
         String best = bestBackdrop(o.optJSONObject("images"));
         if (best != null) p.backdrop = best;
+        p.logo = bestLogo(o.optJSONObject("images"));
         List<String> parts = new ArrayList<>();
         JSONArray genres = o.optJSONArray("genres");
         if (p.kind.equals("tv")) parts.add(Ui.tr("Série", "Series"));
@@ -908,6 +965,26 @@ final class Recs {
             if (score > bestScore) {
                 bestScore = score;
                 best = b.optString("file_path");
+            }
+        }
+        return best;
+    }
+
+    /** The title's logo in the TV's language, else English, else any: the most voted, as a PNG (SVGs can't be drawn). */
+    private static String bestLogo(JSONObject images) {
+        JSONArray list = images == null ? null : images.optJSONArray("logos");
+        String best = null;
+        double bestScore = -1;
+        for (int i = 0; list != null && i < list.length(); i++) {
+            JSONObject l = list.optJSONObject(i);
+            String path = l == null ? "" : l.optString("file_path", "");
+            if (!path.endsWith(".png")) continue;
+            String lang = l.optString("iso_639_1", "");
+            double score = (lang.equals(Ui.language) ? 2e6 : lang.equals("en") ? 1e6 : 0) + l.optDouble("vote_average", 0) * 1000
+                    + Math.min(l.optInt("width"), 1000);
+            if (score > bestScore) {
+                bestScore = score;
+                best = path;
             }
         }
         return best;
@@ -1045,7 +1122,8 @@ final class Recs {
                         .put("meta", p.meta).put("app", p.app == null ? "" : p.app).put("pkg", p.pkg == null ? "" : p.pkg)
                         .put("detailed", p.detailed).put("section", p.section == null ? "" : p.section)
                         .put("poster", p.poster == null ? "" : p.poster)
-                        .put("netflixId", p.netflixId == null ? "" : p.netflixId).put("netflixChecked", p.netflixChecked));
+                        .put("netflixId", p.netflixId == null ? "" : p.netflixId).put("netflixChecked", p.netflixChecked)
+                        .put("logo", p.logo == null ? "" : p.logo));
             }
             cache.edit().putString("picks", a.toString()).putInt("period", period).putLong("listAt", listAt)
                     .putString("language", listLanguage)
@@ -1072,6 +1150,7 @@ final class Recs {
             p.poster = o.optString("poster").isEmpty() ? null : o.optString("poster");
             p.netflixId = o.optString("netflixId").isEmpty() ? null : o.optString("netflixId");
             p.netflixChecked = o.optBoolean("netflixChecked");
+            p.logo = o.optString("logo").isEmpty() ? null : o.optString("logo");
             out.add(p);
         }
         return out;

@@ -176,6 +176,13 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private TextPaint rowTitle2;
     private final TextPaint cardTitlePaint = new TextPaint(Paint.ANTI_ALIAS_FLAG);
     private final Rect srcRect = new Rect();
+    private final android.graphics.Matrix shadeMatrix = new android.graphics.Matrix();
+    // Transparent at the top half, dark at the bottom: the logo reads on any picture. In unit space, scaled per card.
+    private final Paint shade = new Paint(Paint.ANTI_ALIAS_FLAG);
+    {
+        shade.setShader(new LinearGradient(0, 0.35f, 0, 1, 0x00000000, 0xB3000000, Shader.TileMode.CLAMP));
+    }
+    private TextPaint infoTitle, infoText;
     private final List<HomeApps.Item> lightButtons = new ArrayList<>();
     private Paint lTitle, lTab, lTabOn, lCardTitle, lCardMeta, lQuote, lTip, lSection, lRowName, lAction;
     // The title waiting for a second OK to be requested (and when the first OK came), and what sends it
@@ -597,6 +604,8 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         lSection = Ui.text(Ui.semibold, 23 * k, L_DIM);
         lRowName = Ui.text(Ui.semibold, 30 * k, L_INK);
         lAction = Ui.text(Ui.medium, 23 * k, L_DIM);
+        infoTitle = new TextPaint(Ui.text(Ui.semibold, 30 * k, 0xFFFFFFFF));
+        infoText = new TextPaint(Ui.text(Ui.regular, 22 * k, 0xDDFFFFFF));
         lQuote = Ui.numbers(Ui.regular, 21 * k, L_FAINT);
         lTip = Ui.text(Ui.semibold, 25 * k, L_INK);
         lTip.setTextAlign(Paint.Align.CENTER);
@@ -2610,14 +2619,25 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         clip.addRoundRect(cell, r, r, Path.Direction.CW);
         c.save();
         c.clipPath(clip);
-        Bitmap poster = recs.poster(p), still = f > 0.02f ? recs.still(p) : null;
+        // Anime has no 16:9 art worth showing (AniList's banners are thin strips): its widened card is the cover with
+        // the story beside it. Movies and shows: TMDB's clean backdrop with the title's logo on a soft shade.
+        boolean info = Hikari.KIND.equals(p.kind);
+        Bitmap poster = recs.poster(p), still = f > 0.02f && !info ? recs.still(p) : null;
         if (poster == null && still == null) {
             fill.setShader(null);
             fill.setColor(tone(0xFFDADADF, 0xFF2C2C2E));
             c.drawRect(cell, fill);
         }
-        if (poster != null && (still == null || f < 0.98f)) drawCropped(c, poster, cell, still == null ? 1 : 1 - f);
-        if (still != null) drawCropped(c, still, cell, f);
+        if (info) {
+            if (poster != null) drawCropped(c, poster, cell, 1 - f);
+            if (f > 0.02f) drawInfo(c, p, poster, cell, f);
+        } else {
+            if (poster != null && (still == null || f < 0.98f)) drawCropped(c, poster, cell, still == null ? 1 : 1 - f);
+            if (still != null) {
+                drawCropped(c, still, cell, f);
+                drawLogo(c, p, cell, f);
+            }
+        }
         if (p.progress > 0.01f) drawProgress(c, cell, p.progress);
         c.restore();
         if (f > 0.01f) {
@@ -2632,6 +2652,61 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             cardTitlePaint.set(lAction);
             c.drawText(f > 0.5f ? fit(p, 1, line, cardTitlePaint, base.width()) : line, base.left, y + 33 * k, lAction);
         }
+    }
+
+    /**
+     * The anime's widened card: its cover blurred and darkened behind, the cover on the left, the title and the story
+     * on the right (laid out once at the full width; the card's clip reveals it as it widens).
+     */
+    private void drawInfo(Canvas c, Recs.Pick p, Bitmap poster, RectF cell, float f) {
+        Bitmap blur = recs.blur(p);
+        if (blur != null) {
+            bitmapPaint.setAlpha(Math.round(255 * f));
+            c.drawBitmap(blur, null, cell, bitmapPaint);
+            bitmapPaint.setAlpha(255);
+        }
+        fill.setShader(null);
+        fill.setColor(Ui.alpha(0xFF000000, 0.5f * f));
+        c.drawRect(cell, fill);
+        float pad = 20 * k, coverH = cell.height() - 2 * pad, coverW = coverH * 2 / 3;
+        tmp.set(cell.left + pad, cell.top + pad, cell.left + pad + coverW, cell.top + pad + coverH);
+        if (poster != null) {
+            bitmapPaint.setAlpha(Math.round(255 * f));
+            c.drawBitmap(poster, null, tmp, bitmapPaint);
+            bitmapPaint.setAlpha(255);
+        }
+        float x = tmp.right + 26 * k, textW = (R_WIDE - 2 * 20 - 26) * k - coverW;
+        infoTitle.setAlpha(Math.round(255 * f));
+        c.drawText(fit(p, 2, p.title, infoTitle, textW), x, cell.top + pad + 32 * k, infoTitle);
+        if (p.synopsis == null) return;
+        if (!(p.layout instanceof StaticLayout) || p.layoutFor != textW) {
+            p.layout = StaticLayout.Builder.obtain(p.synopsis, 0, p.synopsis.length(), infoText, Math.round(textW))
+                    .setMaxLines(8).setEllipsize(TextUtils.TruncateAt.END).setLineSpacing(4 * k, 1).build();
+            p.layoutFor = textW;
+        }
+        infoText.setAlpha(Math.round(220 * f));
+        c.save();
+        c.translate(x, cell.top + pad + 52 * k);
+        ((StaticLayout) p.layout).draw(c);
+        c.restore();
+    }
+
+    /** The title's logo on a soft shade at the bottom left of the backdrop (none yet: just the shade). */
+    private void drawLogo(Canvas c, Recs.Pick p, RectF cell, float f) {
+        shadeMatrix.setScale(1, cell.height());
+        shadeMatrix.postTranslate(0, cell.top);
+        shade.getShader().setLocalMatrix(shadeMatrix);
+        shade.setAlpha(Math.round(255 * f));
+        c.drawRect(cell, shade);
+        Bitmap logo = recs.logo(p);
+        if (logo == null) return;
+        float maxW = cell.width() * 0.46f, maxH = cell.height() * 0.3f;
+        float scale = Math.min(maxW / logo.getWidth(), maxH / logo.getHeight());
+        float lw = logo.getWidth() * scale, lh = logo.getHeight() * scale, inset = 26 * k;
+        tmp.set(cell.left + inset, cell.bottom - inset - lh, cell.left + inset + lw, cell.bottom - inset);
+        bitmapPaint.setAlpha(Math.round(255 * f));
+        c.drawBitmap(logo, null, tmp, bitmapPaint);
+        bitmapPaint.setAlpha(255);
     }
 
     /** The image cut to the cell's shape (center), at `alpha`: the card changes shape while it widens. */

@@ -268,7 +268,8 @@ final class Jellyfin {
                     .put("seriesId", p.seriesId == null ? "" : p.seriesId).put("seasonId", p.seasonId == null ? "" : p.seasonId)
                     .put("season", p.season).put("episode", p.episode).put("section", p.section == null ? "" : p.section)
                     .put("playId", p.playId == null ? "" : p.playId).put("positionMs", p.positionMs)
-                    .put("banner", p.banner == null ? "" : p.banner).put("progress", p.progress));
+                    .put("banner", p.banner == null ? "" : p.banner).put("progress", p.progress)
+                    .put("synopsis", p.synopsis == null ? "" : p.synopsis));
         }
         return a;
     }
@@ -299,6 +300,7 @@ final class Jellyfin {
             p.positionMs = o.optLong("positionMs");
             p.banner = o.optString("banner").isEmpty() ? null : o.optString("banner");
             p.progress = (float) o.optDouble("progress", 0);
+            p.synopsis = o.optString("synopsis").isEmpty() ? null : o.optString("synopsis");
             out.add(p);
         }
         return out;
