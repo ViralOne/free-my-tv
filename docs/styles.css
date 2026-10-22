@@ -1297,6 +1297,20 @@ h2 {
   }
 }
 
+@media (max-width: 680px) {
+  .tabs {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    border-radius: 24px;
+  }
+
+  .tabs button {
+    padding: 0 6px;
+    font-size: 14px;
+    white-space: nowrap;
+  }
+}
+
 @media (max-width: 560px) {
   body {
     font-size: 16px;

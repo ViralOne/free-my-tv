@@ -37,9 +37,9 @@ final class Hikari {
 
     /** The group's name above its first card. */
     static String sectionLabel(String section) {
-        if (WATCHING.equals(section)) return Ui.tr("Assistindo", "Watching", "Viendo");
-        if (AIRING.equals(section)) return Ui.tr("No ar agora", "Airing now", "En emisión");
-        if (TRENDING.equals(section)) return Ui.tr("Em alta na semana", "Trending this week", "Tendencia esta semana");
+        if (WATCHING.equals(section)) return Ui.tr("Watching");
+        if (AIRING.equals(section)) return Ui.tr("Airing now");
+        if (TRENDING.equals(section)) return Ui.tr("Trending this week");
         return "";
     }
 
@@ -163,7 +163,7 @@ final class Hikari {
         JSONObject next = w == null ? null : w.optJSONObject("next");
         if (w != null && w.optInt("played") > 0 && next != null) {
             String name = next.optString("name", "");
-            return Ui.tr("Próximo: E", "Next: E", "Siguiente: E") + next.optInt("episode")
+            return Ui.trf("Next: E{n}", "n", next.optInt("episode"))
                     + (name.isEmpty() || name.equals("null") ? "" : " · " + name);
         }
         List<String> parts = new ArrayList<>();
@@ -171,7 +171,7 @@ final class Hikari {
         if (genres != null && genres.length() > 0) parts.add(genres.optString(0));
         if (m.optInt("seasonYear") > 0) parts.add(String.valueOf(m.optInt("seasonYear")));
         // What OK does is said apart (Wholphin / Request under the card), so only "in your library" here.
-        if (owned) parts.add(Ui.tr("Na sua biblioteca", "In your library", "En tu biblioteca"));
+        if (owned) parts.add(Ui.tr("In your library"));
         return String.join(" · ", parts);
     }
 
@@ -225,8 +225,7 @@ final class Hikari {
         JSONObject r = d.optJSONObject("request");
         Plan plan = new Plan();
         if (r == null || !r.optBoolean("matched")) {
-            plan.why = Ui.tr("O Hikari não achou esse título no TMDB: peça pelo Hikari.",
-                    "Hikari couldn't match it on TMDB: request it in Hikari.", "Hikari no lo encontró en TMDB: pídelo en Hikari.");
+            plan.why = Ui.tr("Hikari couldn't match it on TMDB: request it in Hikari.");
             return plan;
         }
         String type = r.optString("mediaType");
@@ -239,7 +238,7 @@ final class Hikari {
                 if (!season.optBoolean("taken")) open.add(season.optInt("seasonNumber"));
             }
             if (seasons != null && seasons.length() > 0 && open.isEmpty()) {
-                plan.why = Ui.tr("Já foi pedido.", "Already requested.", "Ya está pedido.");
+                plan.why = Ui.tr("Already requested.");
                 return plan;
             }
             int suggested = r.optInt("suggestedSeason", 0);
@@ -251,7 +250,7 @@ final class Hikari {
             } else if (open.size() == 1) {
                 chosen.put(open.get(0));
             } else {
-                plan.why = Ui.tr("Escolha a temporada no Hikari.", "Pick the season in Hikari.", "Elige la temporada en Hikari.");
+                plan.why = Ui.tr("Pick the season in Hikari.");
                 return plan;
             }
             if (chosen.length() > 0) body.put("seasons", chosen);
@@ -259,7 +258,7 @@ final class Hikari {
             body.put("forceAnime", routing != null && routing.has("treatedAsAnime") && !routing.optBoolean("treatedAsAnime"))
                     .put("anilistId", p.id).put("whole", false);
             plan.what = chosen.length() > 0
-                    ? Ui.tr("a temporada ", "season ", "la temporada ") + chosen.getInt(0) + Ui.tr(" de ", " of ", " de ") + p.title
+                    ? Ui.trf("season {n} of {title}", "n", chosen.getInt(0), "title", p.title)
                     : p.title;
         } else {
             plan.what = p.title;
@@ -277,10 +276,10 @@ final class Hikari {
             c.setRequestProperty("Content-Type", "application/json");
             c.getOutputStream().write(plan.body.toString().getBytes(StandardCharsets.UTF_8));
             int code = c.getResponseCode();
-            if (code == 409) return Ui.tr("Já foi pedido.", "Already requested.", "Ya está pedido.");
+            if (code == 409) return Ui.tr("Already requested.");
             if (code == 401) throw new IOException("Hikari rejected the token");
             if (code != 200 && code != 201) throw new IOException("Hikari returned HTTP " + code);
-            return Ui.tr("Pedido: ", "Requested: ", "Pedido: ") + plan.what + ".";
+            return Ui.trf("Requested: {what}.", "what", plan.what);
         } finally {
             c.disconnect();
         }

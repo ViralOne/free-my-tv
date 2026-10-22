@@ -18,7 +18,9 @@
         <package android:name="com.amazon.amazonvideo.livingroom" />
         <package android:name="com.disney.disneyplus" />
         <package android:name="com.wbd.stream" />
+        <package android:name="com.hbo.hbonow" />
         <package android:name="com.apple.atve.androidtv.appletv" />
+        <package android:name="com.apple.atve.sony.appletv" />
         <package android:name="com.hulu.livingroomplus" />
         <package android:name="com.cbs.ott" />
         <package android:name="com.peacocktv.peacockandroid" />
@@ -31,6 +33,10 @@
         <intent>
             <action android:name="android.intent.action.MAIN" />
             <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
         </intent>
         <intent>
             <action android:name="android.intent.action.VIEW" />
@@ -123,10 +129,11 @@
             android:exported="false"
             android:permission="android.permission.BIND_JOB_SERVICE" />
 
-        <!-- The remote's app buttons from inside any app (Settings > Remote Buttons). Same process as the settings. -->
+        <!-- The remote's app buttons from inside any app (Settings > Remote Buttons). Its own process: the system waits for it on
+             every key, so the home screen must never be able to slow it down. -->
         <service
             android:name=".RemoteKeyService"
-            android:process=":home"
+            android:process=":keys"
             android:exported="true"
             android:label="Free My TV"
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">

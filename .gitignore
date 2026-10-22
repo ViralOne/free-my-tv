@@ -6,6 +6,10 @@ config.properties
 # Build output
 out/
 *.apk
+*.ipk
+*.wgt
+__pycache__/
 
 # macOS
 .DS_Store
+tools/.i18n-cache.json

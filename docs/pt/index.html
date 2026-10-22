@@ -11,8 +11,8 @@
       if (lang === "en") location.replace("../" + location.search + location.hash);
     })();
   </script>
-  <title>Free My TV — uma tela inicial rápida e sem anúncios para a Google TV</title>
-  <meta name="description" content="Tela inicial de código aberto para Google TV e Android TV. Sem anúncios, a 60 fps, com o que está em alta nos seus próprios apps e um visual que acompanha o pôr do sol. Um botão para desfazer.">
+  <title>Free My TV — uma tela inicial rápida e sem anúncios para Google TV e TVs LG e Samsung</title>
+  <meta name="description" content="Tela inicial de código aberto para Google TV, Android TV e TVs LG e Samsung. Sem anúncios, a 60 fps, com o que está em alta nos seus próprios apps e um visual que acompanha o pôr do sol. Um botão para desfazer.">
   <link rel="canonical" href="https://freemytv.io/pt/">
   <link rel="alternate" hreflang="en" href="https://freemytv.io/">
   <link rel="alternate" hreflang="pt-BR" href="https://freemytv.io/pt/">
@@ -23,13 +23,13 @@
   <meta property="og:locale:alternate" content="en_US">
   <meta property="og:url" content="https://freemytv.io/pt/">
   <meta property="og:title" content="Free My TV">
-  <meta property="og:description" content="Uma tela inicial rápida e sem anúncios para a Google TV. Código aberto. Um botão para desfazer.">
+  <meta property="og:description" content="Uma tela inicial rápida e sem anúncios para Google TV e TVs LG e Samsung. Código aberto. Um botão para desfazer.">
   <meta property="og:image" content="https://freemytv.io/assets/og-pt.jpg">
   <meta property="og:image:width" content="1200">
   <meta property="og:image:height" content="630">
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:title" content="Free My TV">
-  <meta name="twitter:description" content="Uma tela inicial rápida e sem anúncios para a Google TV. Código aberto. Um botão para desfazer.">
+  <meta name="twitter:description" content="Uma tela inicial rápida e sem anúncios para Google TV e TVs LG e Samsung. Código aberto. Um botão para desfazer.">
   <meta name="twitter:image" content="https://freemytv.io/assets/og-pt.jpg">
   <link rel="icon" type="image/png" href="../assets/favicon-64.png">
   <link rel="apple-touch-icon" href="../assets/apple-touch-icon.png">
@@ -63,7 +63,7 @@
     <!-- Hero -->
     <section class="hero">
       <div class="hero-copy">
-        <p class="kicker" data-reveal>Código aberto · Google TV</p>
+        <p class="kicker" data-reveal>Código aberto · Google TV, Android TV, LG e Samsung</p>
         <h1 data-reveal>Liberte sua <span class="grad">TV.</span></h1>
         <p class="lede" data-reveal>Troque a tela inicial cheia de anúncios por uma rápida e limpa. O que está em alta nos seus próprios apps, o clima num relance e um visual que acompanha o pôr do sol. Um botão para desfazer.</p>
         <div class="cta" data-reveal>
@@ -205,19 +205,18 @@
       </div>
       <div class="panel" data-reveal>
         <div class="tabs" role="tablist" aria-label="Forma de instalar">
-          <button role="tab" aria-selected="true" aria-controls="tab-claude" id="t-claude">Com o Claude Code</button>
+          <button role="tab" aria-selected="true" aria-controls="tab-claude" id="t-claude">Com IA</button>
           <button role="tab" aria-selected="false" aria-controls="tab-manual" id="t-manual">Manual</button>
+          <button role="tab" aria-selected="false" aria-controls="tab-lg" id="t-lg">TVs LG</button>
+          <button role="tab" aria-selected="false" aria-controls="tab-samsung" id="t-samsung">TVs Samsung</button>
         </div>
 
         <div class="tabpanel" id="tab-claude" role="tabpanel" aria-labelledby="t-claude">
           <ol class="howto">
             <li><b>Na TV:</b> Configurações → Sistema → Sobre → aperte 7 vezes no item <em>Build</em> (o último da lista). De volta em Sistema, abra <em>Opções do desenvolvedor</em> e ative a <em>Depuração USB</em>. Anote o endereço IP da TV (Configurações → Rede e Internet).</li>
-            <li><b>No computador:</b> baixe o código.
-              <div class="code"><code>git clone https://github.com/simbasjungles/free-my-tv &amp;&amp; cd free-my-tv</code><button class="copy-btn" type="button" aria-label="Copiar comando">Copiar</button></div>
-            </li>
-            <li><b>Abra o Claude Code nessa pasta e diga:</b>
-              <div class="code prompt"><code>Instale o Free My TV na minha TV em 192.168.1.50. Eu moro em São Paulo.</code><button class="copy-btn" type="button" aria-label="Copiar pedido">Copiar</button></div>
-              Ele instala o que falta, compila o app e coloca na sua TV. Troque pelo IP da sua TV e pela sua cidade.
+            <li><b>No computador:</b> abra um assistente de IA (Claude Code, Codex ou Antigravity) e diga:
+              <div class="code prompt"><code>Instale o Free My TV (github.com/simbasjungles/free-my-tv) na minha TV em 192.168.1.50. Eu moro em São Paulo.</code><button class="copy-btn" type="button" aria-label="Copiar pedido">Copiar</button></div>
+              Ele baixa o código, instala o que falta, compila o app e coloca na sua TV, e pede a sua permissão antes de qualquer coisa importante. Troque pelo IP da sua TV e pela sua cidade.
             </li>
             <li><b>De volta na TV:</b> abra <em>Free My TV</em> → <em>Início</em> → <em>Free My TV</em> e aceite o aviso de depuração (marque <em>Sempre permitir</em>).</li>
           </ol>
@@ -240,6 +239,30 @@
             <li><b>Na TV:</b> abra <em>Free My TV</em> → <em>Início</em> → <em>Free My TV</em>.</li>
           </ol>
         </div>
+
+        <div class="tabpanel" id="tab-lg" role="tabpanel" aria-labelledby="t-lg" hidden>
+          <ol class="howto">
+            <li><b>Na TV:</b> na LG Content Store, instale o <em>Developer Mode</em>. Entre com uma <a href="https://webostv.developer.lge.com" rel="noopener">conta grátis de desenvolvedor LG</a>, ative o <em>Dev Mode Status</em> (a TV reinicia) e depois o <em>Key Server</em>. Anote o IP e a senha (passphrase) que aparecem.</li>
+            <li><b>No computador:</b> baixe o código e compile o app da LG. Coloque sua cidade no <em>config.properties</em> (e <em>currency=BRL</em> para as cotações em reais), como na Google TV.
+              <div class="code"><code>git clone https://github.com/simbasjungles/free-my-tv &amp;&amp; cd free-my-tv &amp;&amp; python3 webos/build.py</code><button class="copy-btn" type="button" aria-label="Copiar comando">Copiar</button></div>
+            </li>
+            <li><b>Instalar:</b> digite a senha da TV quando ele pedir. O Free My TV abre na TV.
+              <div class="code"><code>python3 webos/install.py 192.168.1.50</code><button class="copy-btn" type="button" aria-label="Copiar comando">Copiar</button></div>
+            </li>
+            <li><b>A um botão:</b> com ele aberto, segure uma tecla numérica do controle. Daí em diante, essa tecla abre o Free My TV de qualquer lugar. Aperte <em>EXTEND</em> no Developer Mode uma vez por mês para mantê-lo.</li>
+          </ol>
+        </div>
+
+        <div class="tabpanel" id="tab-samsung" role="tabpanel" aria-labelledby="t-samsung" hidden>
+          <ol class="howto">
+            <li><b>Na TV:</b> abra <em>Apps</em> e digite <em>1&nbsp;2&nbsp;3&nbsp;4&nbsp;5</em> no controle. Ative o <em>Developer mode</em>, digite o IP do seu computador em <em>Host PC IP</em> e reinicie a TV.</li>
+            <li><b>No computador:</b> baixe o <a href="https://github.com/reisxd/TizenBrewInstaller/releases/latest" rel="noopener">TizenBrew Installer</a>, o instalador da comunidade para TVs Samsung, abra e conecte na sua TV.</li>
+            <li><b>Instale pelo GitHub:</b> digite isto. Nas TVs de 2023 em diante, ele pede para entrar na sua conta Samsung uma vez, para assinar o app para a sua TV.
+              <div class="code"><code>simbasjungles/free-my-tv</code><button class="copy-btn" type="button" aria-label="Copiar">Copiar</button></div>
+            </li>
+            <li><b>Direto nele:</b> nas configurações da TV (Opções da Tela Inicial ou Funções Smart), ative a <em>Execução Automática do Último Aplicativo</em>: a TV já liga no Free My TV. Ele pega a sua cidade pelo fuso da TV; para a cidade exata e os destaques, o Claude Code compila com as suas configurações.</li>
+          </ol>
+        </div>
       </div>
     </section>
 
@@ -248,10 +271,10 @@
       <div class="head" data-reveal>
         <p class="kicker">Compatibilidade</p>
         <h2>Funciona com qualquer TV.</h2>
-        <p class="sub">Roda direto nas TVs com Google TV e Android TV. Qualquer outra TV ganha o Free My TV com um aparelho Google TV ligado no HDMI.</p>
+        <p class="sub">Roda direto nas TVs com Google TV e Android TV, e nas TVs LG e Samsung. Qualquer outra TV ganha o Free My TV com um aparelho Google TV ligado no HDMI.</p>
       </div>
       <div class="chips" data-reveal>
-        <span class="chip ok">Google TV</span><span class="chip ok">Android TV</span><span class="chip ok">TCL</span><span class="chip ok">Sony</span>
+        <span class="chip ok">Google TV</span><span class="chip ok">Android TV</span><span class="chip ok">LG webOS</span><span class="chip ok">Samsung Tizen</span><span class="chip ok">TCL</span><span class="chip ok">Sony</span>
         <span class="chip ok">Hisense</span><span class="chip ok">Philips</span><span class="chip ok">Xiaomi</span><span class="chip ok">Chromecast with Google TV</span>
         <span class="chip ok">Google TV Streamer</span><span class="chip ok">NVIDIA Shield</span><span class="chip ok">onn 4K</span>
       </div>
@@ -269,9 +292,11 @@
         <details><summary>Como eu volto ao original?</summary><p>Abra Free My TV → Início → Original. A tela inicial de fábrica, o protetor de tela e todos os apps voltam exatamente como estavam. Se a tela nova travar três vezes em cinco minutos, ele volta sozinho.</p></details>
         <details><summary>Muda a qualidade da imagem?</summary><p>Não. Os ajustes de imagem não são tocados e os vídeos passam pelo mesmo caminho no hardware. Medimos a mesma resolução e a mesma fonte de vídeo nos dois modos.</p></details>
         <details><summary>O que é desligado?</summary><p>A tela inicial e o protetor de tela de fábrica (substituídos), a tela de recuperação do Google TV, Play Games e YouTube Music e, nas TVs TCL, o TCL Channel, as mensagens, a demonstração de loja, o menu de hotel, os manuais e os apps de espelhamento e de registros. O Google Assistente só se você pedir no config.</p></details>
+        <details><summary>Funciona em TV LG?</summary><p>Funciona. Na LG ele é instalado pelo próprio Developer Mode da LG, sem root e sem mudar nada na TV, e abre com um toque numa tecla numérica. A mesma tela inicial, com destaques, clima e cotações. Aperte EXTEND no app Developer Mode uma vez por mês para mantê-lo.</p></details>
+        <details><summary>Funciona em TV Samsung?</summary><p>Funciona, nas TVs Samsung de 2017 em diante. Ele é instalado pelo próprio Developer Mode da Samsung com o TizenBrew Installer, o instalador da comunidade, sem root e sem mudar nada na TV. A mesma tela inicial, clima e cotações, com a sua cidade pelo fuso da TV. Para os destaques, o Claude Code compila com a sua chave grátis do TMDB.</p></details>
         <details><summary>Dá para deixar do meu jeito?</summary><p>Essa é a ideia. Abra a pasta no Claude Code e é só pedir: "coloque o Crunchyroll na prateleira", "mostre as cotações em reais", "configure para a minha Sony". Ele muda o código, compila o app e coloca na sua TV.</p></details>
-        <details><summary>Fica em português?</summary><p>Fica. O app segue o idioma da TV (português, inglês ou espanhol), ou o que você escolher nos ajustes dele. Quer outro idioma? Peça ao Claude.</p></details>
-        <details><summary>Ele coleta algum dado?</summary><p>Não. Sem contas, sem análises, sem rastreamento. Ele só fala com o TMDB (destaques), o Open-Meteo (clima, com as coordenadas que você definir) e a Binance (cotações).</p></details>
+        <details><summary>Fica em português?</summary><p>Fica. O app segue o idioma da TV (português, inglês, espanhol, russo ou alemão; no Google TV também francês, italiano, japonês e mais 16), ou o que você escolher nos ajustes dele. Quer outro idioma? Peça ao Claude.</p></details>
+        <details><summary>Ele coleta algum dado?</summary><p>Não. Sem contas, sem análises, sem rastreamento. Ele só fala com o TMDB (destaques), o Open-Meteo (clima, da sua cidade) e a Binance (cotações), e o Watchmode (links dos títulos) só se você colocar a chave dele.</p></details>
         <details><summary>É grátis?</summary><p>Sim. Licença MIT, e a chave do TMDB também é grátis.</p></details>
       </div>
     </section>
@@ -289,8 +314,8 @@
 
   <footer class="foot">
     <div class="brand"><img src="../assets/icon-512.png" alt="" width="24" height="24"><span>Free My TV</span></div>
-    <p>Feito com Claude Code. Licença MIT. Sem ligação com o Google, a TCL ou qualquer serviço de streaming; nomes e logos dos apps pertencem aos seus donos.</p>
-    <p>Este produto usa a API do TMDB, mas não é endossado nem certificado pelo TMDB. Dados do clima por <a href="https://open-meteo.com/" rel="noopener">Open-Meteo.com</a> (CC BY 4.0). Cotações da Binance. Ícones: Material Symbols. Fonte: Inter.</p>
+    <p>Feito com Claude Code. Licença MIT. Sem ligação com o Google, a TCL, a LG, a Samsung ou qualquer serviço de streaming; nomes e logos dos apps pertencem aos seus donos.</p>
+    <p>Este produto usa a API do TMDB, mas não é endossado nem certificado pelo TMDB. Dados do clima por <a href="https://open-meteo.com/" rel="noopener">Open-Meteo.com</a> (CC BY 4.0). Cotações da Binance. Links dos títulos por <a href="https://api.watchmode.com/" rel="noopener">Watchmode</a>. Ícones: Material Symbols. Fonte: Inter.</p>
   </footer>
 
   <dialog class="film" id="film" aria-label="O filme do Free My TV">

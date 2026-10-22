@@ -5,8 +5,6 @@ import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
 import android.graphics.Paint;
-import android.graphics.PorterDuff;
-import android.graphics.PorterDuffColorFilter;
 import android.graphics.RectF;
 
 import java.io.IOException;
@@ -27,7 +25,6 @@ final class Symbols {
      */
     private static final float PX_PER_POINT = 96 * 1.5f;
     private static final Map<String, Bitmap> CACHE = new HashMap<>();
-    private static final Map<Integer, PorterDuffColorFilter> FILTERS = new HashMap<>();
     private static final Paint PAINT = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
     private static final RectF RECT = new RectF();
 
@@ -37,7 +34,10 @@ final class Symbols {
             Bitmap b = null;
             try (InputStream in = c.getAssets().open("symbols/" + name + ".png")) {
                 b = BitmapFactory.decodeStream(in);
-                if (b != null) b.setHasMipMap(true);
+                if (b != null) {
+                    b = b.extractAlpha();
+                    b.setHasMipMap(true);
+                }
             } catch (IOException ignored) {
             }
             CACHE.put(name, b);
@@ -61,14 +61,7 @@ final class Symbols {
 
     private static void drawLocked(Canvas canvas, Bitmap b, float cx, float cy, float pointSize, int color) {
         float w = b.getWidth() * pointSize / PX_PER_POINT, h = b.getHeight() * pointSize / PX_PER_POINT;
-        PorterDuffColorFilter filter = FILTERS.get(color);
-        if (filter == null) {
-            // Animated colors (focus, night) produce a new color every frame: the cache must not grow forever.
-            if (FILTERS.size() > 256) FILTERS.clear();
-            filter = new PorterDuffColorFilter(color, PorterDuff.Mode.SRC_IN);
-            FILTERS.put(color, filter);
-        }
-        PAINT.setColorFilter(filter);
+        PAINT.setColor(color);
         RECT.set(cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2);
         canvas.drawBitmap(b, null, RECT, PAINT);
     }

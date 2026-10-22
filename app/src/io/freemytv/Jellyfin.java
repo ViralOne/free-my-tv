@@ -87,7 +87,7 @@ final class Jellyfin {
             p.season = o.optInt("ParentIndexNumber", -1);
             p.episode = o.optInt("IndexNumber", -1);
             if (p.season >= 0 && p.episode >= 0) {
-                meta.append(Ui.tr("T", "S", "T")).append(p.season).append(" E").append(p.episode).append(" · ");
+                meta.append(Ui.trf("S{s} E{e}", "s", p.season, "e", p.episode)).append(" · ");
             }
             meta.append(o.optString("Name"));
         }
@@ -96,8 +96,7 @@ final class Jellyfin {
         long left = (o.optLong("RunTimeTicks") - (user == null ? 0 : user.optLong("PlaybackPositionTicks"))) / 600_000_000L;
         if (user != null && user.optLong("PlaybackPositionTicks") > 0 && left > 0) {
             if (meta.length() > 0) meta.append(" · ");
-            meta.append(left >= 60 ? (left / 60) + " h " + (left % 60) + " min" : left + " min")
-                    .append(Ui.tr(" restantes", " left", " restantes"));
+            meta.append(Ui.trf("{time} left", "time", left >= 60 ? (left / 60) + " h " + (left % 60) + " min" : left + " min"));
         }
         p.meta = meta.toString();
         return p;

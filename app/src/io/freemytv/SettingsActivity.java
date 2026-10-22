@@ -1,6 +1,7 @@
 package io.freemytv;
 
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
@@ -23,6 +24,8 @@ import android.view.Choreographer;
 import android.view.KeyEvent;
 import android.view.View;
 import android.view.accessibility.AccessibilityNodeProvider;
+import android.view.inputmethod.EditorInfo;
+import android.widget.EditText;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -127,6 +130,9 @@ public class SettingsActivity extends Activity {
         private final List<String[]> shelfRows = new ArrayList<>();
         private final List<String> shelfOrder = new ArrayList<>();
         private int pickFor, pickCurrent, pickScroll;   // pickFor: the remote button (index + 1)
+        private static final int PICK_CITY = 0, PICK_LANGUAGE = -1;
+        private final List<String[]> cities = new ArrayList<>();
+        private String cityStatus = "";
         private final RectF tmp = new RectF(), rowRect = new RectF(), focusBox = new RectF();
         private JSONObject state = new JSONObject(), recs = new JSONObject();
         private boolean hasKey;
@@ -147,7 +153,7 @@ public class SettingsActivity extends Activity {
                 state = HomeMode.state(getContext());
                 hasKey = Recs.hasKey(getContext());
                 recs = Recs.status(getContext());
-                boolean nowBusy = !state.optString("busy").isEmpty();
+                boolean nowBusy = !busyText().isEmpty();
                 if (nowBusy) pendingAt = 0;
                 // A switch just ended: TalkBack reads how it went (the newest notice).
                 JSONArray notices = state.optJSONArray("notices");
@@ -157,7 +163,7 @@ public class SettingsActivity extends Activity {
                 }
                 wasBusy = nowBusy;
                 invalidate();
-                handler.postDelayed(this, 500);
+                handler.postDelayed(this, busy() ? 500 : 2000);
             }
         };
 
@@ -198,20 +204,20 @@ public class SettingsActivity extends Activity {
             switch (screen) {
                 case MAIN: {
                     if (row == 0) {
-                        String busyText = state.optString("busy");
-                        String value = busy() ? (busyText.isEmpty() ? Ui.tr("Começando…", "Starting…") : busyText)
-                                : freeActive() ? "Free My TV" : Ui.tr("Original", "Original");
-                        return Ui.tr("Início, ", "Home Screen, ") + value;
+                        String busyText = busyText();
+                        String value = busy() ? (busyText.isEmpty() ? Ui.tr("Starting…") : busyText)
+                                : freeActive() ? "Free My TV" : Ui.tr("Original");
+                        return Ui.trf("Home Screen, {mode}", "mode", value);
                     }
-                    String[] names = {Ui.tr("Tela de Descanso, ver agora", "Screensaver, preview"), Ui.tr("Ajustes do Início", "Home Settings"),
-                            Ui.tr("Prateleira", "Shelf"), Ui.tr("Botões do Controle", "Remote Buttons"), Ui.tr("Ajustes da TV", "TV Settings")};
+                    String[] names = {Ui.tr("Screensaver, preview"), Ui.tr("Home Settings"),
+                            Ui.tr("Shelf"), Ui.tr("Remote Buttons"), Ui.tr("TV Settings")};
                     return row - 1 < names.length ? names[row - 1] : "";
                 }
                 case HOME_CHOICE: {
-                    String name = row == 0 ? "Free My TV, " + Ui.tr("sem anúncios, com a tela de descanso nova", "no ads, with the new screensaver")
-                            : "Original, " + Ui.tr("o Início de fábrica da TV", "the TV's factory home screen");
+                    String name = row == 0 ? "Free My TV, " + Ui.tr("no ads, with the new screensaver")
+                            : "Original, " + Ui.tr("the TV's factory home screen");
                     boolean inUse = (row == 0) == freeActive();
-                    return name + (inUse ? Ui.tr(". Em uso", ". In use") : "") + ", " + (row + 1) + Ui.tr(" de 2", " of 2");
+                    return name + (inUse ? Ui.tr(". In use") : "") + ", " + Ui.trf("{i} of {n}", "i", row + 1, "n", 2);
                 }
                 case HOME_SETTINGS:
                 case REMOTE_KEYS: {
@@ -222,16 +228,16 @@ public class SettingsActivity extends Activity {
                 case PICKER: {
                     int at = pickScroll + row;
                     if (at >= pickLabels.size()) return "";
-                    return pickLabels.get(at) + (at == pickCurrent ? Ui.tr(", escolhido", ", selected") : "")
-                            + ", " + (at + 1) + Ui.tr(" de ", " of ") + pickLabels.size();
+                    return pickLabels.get(at) + (at == pickCurrent ? Ui.tr(", selected") : "")
+                            + ", " + Ui.trf("{i} of {n}", "i", at + 1, "n", pickLabels.size());
                 }
                 case SHELF_EDIT: {
                     int at = pickScroll + row;
                     if (at >= shelfRows.size()) return "";
                     String[] app = shelfRows.get(at);
                     int place = shelfOrder.indexOf(app[0]);
-                    return app[1] + ", " + (place >= 0 ? Ui.tr("na prateleira, posição ", "on the shelf, place ") + (place + 1)
-                            : Ui.tr("fora da prateleira", "not on the shelf"));
+                    return app[1] + ", " + (place >= 0 ? Ui.trf("on the shelf, place {n}", "n", place + 1)
+                            : Ui.tr("not on the shelf"));
                 }
                 default:
                     return "";
@@ -247,8 +253,8 @@ public class SettingsActivity extends Activity {
                 top = LIST_TOP + 20 + row * (CHOICE_H + ROW_GAP);
                 height = CHOICE_H;
             } else {
-                top = LIST_TOP + 20 + row * (LIST_ROW_H + LIST_ROW_GAP);
-                height = LIST_ROW_H;
+                top = LIST_TOP + 20 + row * (rowH() + LIST_ROW_GAP);
+                height = rowH();
             }
             focusBox.set(LIST_X * k, top * k, LIST_R * k, (top + height) * k);
             return focusBox;
@@ -311,7 +317,13 @@ public class SettingsActivity extends Activity {
         }
 
         private boolean busy() {
-            return !state.optString("busy").isEmpty() || (pendingAt != 0 && SystemClock.uptimeMillis() - pendingAt < 10_000);
+            return !busyText().isEmpty() || (pendingAt != 0 && SystemClock.uptimeMillis() - pendingAt < 10_000);
+        }
+
+        private String busyText() {
+            long at = state.optLong("busyAt"), now = SystemClock.elapsedRealtime();
+            boolean stale = now < at || now - at > 10 * 60_000L;
+            return stale ? "" : state.optString("busy");
         }
 
         private boolean freeActive() {
@@ -325,7 +337,7 @@ public class SettingsActivity extends Activity {
                 case HOME_SETTINGS: return settingLabels().length;
                 case PICKER: return Math.min(PICK_VISIBLE, pickLabels.size());
                 case SHELF_EDIT: return Math.min(PICK_VISIBLE, shelfRows.size());
-                default: return Prefs.keys().length;
+                default: return Prefs.KEYS.length;
             }
         }
 
@@ -350,7 +362,7 @@ public class SettingsActivity extends Activity {
             float cx = 500 * k;
             Symbols.draw(getContext(), c, "sparkles", cx, 400 * k, 150 * k, 0xEBFFFFFF);
             c.drawText("Free My TV", cx, 612 * k, title);
-            c.drawText(Ui.tr("Início e tela de descanso da TV", "Your TV's home screen and screensaver"), cx, 660 * k, subtitle);
+            c.drawText(Ui.tr("Your TV's home screen and screensaver"), cx, 660 * k, subtitle);
             c.drawText(versionName(getContext()), cx, 704 * k, version);
 
             if (screen == MAIN) drawMain(c, seconds); else if (screen == HOME_CHOICE) drawChoice(c); else if (screen == PICKER) drawPicker(c); else if (screen == SHELF_EDIT) drawShelfEditor(c); else drawList(c);
@@ -358,12 +370,12 @@ public class SettingsActivity extends Activity {
 
         private void drawMain(Canvas c, float seconds) {
             boolean working = busy();
-            String busyText = state.optString("busy");
-            String mode = freeActive() ? "Free My TV" : Ui.tr("Original", "Original");
-            String[] labels = {Ui.tr("Início", "Home Screen"), Ui.tr("Tela de Descanso", "Screensaver"),
-                    Ui.tr("Ajustes do Início", "Home Settings"), Ui.tr("Prateleira", "Shelf"),
-                    Ui.tr("Botões do Controle", "Remote Buttons"), Ui.tr("Ajustes da TV", "TV Settings")};
-            String[] values = {working ? "" : mode, Ui.tr("Ver agora", "Preview"), "", "", "", ""};
+            String busyText = busyText();
+            String mode = freeActive() ? "Free My TV" : Ui.tr("Original");
+            String[] labels = {Ui.tr("Home Screen"), Ui.tr("Screensaver"),
+                    Ui.tr("Home Settings"), Ui.tr("Shelf"),
+                    Ui.tr("Remote Buttons"), Ui.tr("TV Settings")};
+            String[] values = {working ? "" : mode, Ui.tr("Preview"), "", "", "", ""};
             for (int i = 0; i < 6; i++) {
                 float y = (LIST_TOP + i * (ROW_H + ROW_GAP)) * k;
                 rowRect.set(LIST_X * k, y, LIST_R * k, y + ROW_H * k);
@@ -378,7 +390,7 @@ public class SettingsActivity extends Activity {
                     Symbols.draw(getContext(), c, "chevron_right", right - cw / 2, rowRect.centerY(), 22 * k, blend(0x66FFFFFF, 0x991C1C1E, f));
                 } else if (i == 0 && working) {
                     // Switching: the current step in place of the value, with the spinning arc.
-                    String text = busyText.isEmpty() ? Ui.tr("Começando…", "Starting…") : busyText;
+                    String text = busyText.isEmpty() ? Ui.tr("Starting…") : busyText;
                     rowValue.setColor(blend(0xB3FFFFFF, 0xB31C1C1E, f));
                     String shown = TextUtils.ellipsize(text, new TextPaint(rowValue), 470 * k, TextUtils.TruncateAt.END).toString();
                     c.drawText(shown, right, base, rowValue);
@@ -393,8 +405,8 @@ public class SettingsActivity extends Activity {
 
             float y = (LIST_TOP + 6 * (ROW_H + ROW_GAP) + 20) * k;
             String error = state.optString("error");
-            if (working && (busyText.contains("Permitir") || busyText.contains("Allow"))) {
-                c.drawText(Ui.tr("Na TV: marque “Sempre permitir” e aperte OK.", "On the TV: tick “Always allow” and press OK."),
+            if (working && busyText.equals(Ui.tr("Accept “Allow USB debugging?” on the TV (tick “Always allow”)."))) {
+                c.drawText(Ui.tr("On the TV: tick “Always allow” and press OK."),
                         LIST_X * k + 30 * k, y, warn);
                 y += 46 * k;
             } else if (!working && !error.isEmpty()) {
@@ -419,21 +431,22 @@ public class SettingsActivity extends Activity {
         /** Home screen picks: status, and the credit TMDB asks for. */
         private float drawRecs(Canvas c, float y) {
             float x = LIST_X * k + 30 * k;
-            c.drawText(Ui.tr("RECOMENDAÇÕES", "RECOMMENDATIONS"), x, y, header);
+            c.drawText(Ui.tr("RECOMMENDATIONS"), x, y, header);
             String line;
             String error = recs.optString("error");
             int count = recs.optInt("count");
-            if (!hasKey) line = Ui.tr("Sem chave do TMDB: veja o README (config.properties).", "No TMDB key: see the README (config.properties).");
-            else if (!error.isEmpty()) line = Ui.tr("Erro: ", "Error: ") + error + ".";
-            else if (count > 0) line = Ui.tr("Ligadas · " + count + " títulos nos apps da TV, 3 novos a cada hora.",
-                    "On · " + count + " titles from the TV's apps, 3 new ones every hour.");
-            else line = Ui.tr("Buscando os títulos…", "Fetching titles…");
+            if (!hasKey) line = Ui.tr("No TMDB key: see the README (config.properties).");
+            else if (!error.isEmpty()) line = Ui.trf("Error: {error}.", "error", error);
+            else if (count > 0) line = Ui.trf("On · {n} titles from the TV's apps, 3 new ones every hour.", "n", count);
+            else line = Ui.tr("Fetching titles…");
             c.drawText(TextUtils.ellipsize(line, notice, 790 * k, TextUtils.TruncateAt.END).toString(), x, y + 42 * k, notice);
             version.setTextAlign(Paint.Align.LEFT);
-            c.drawText(Ui.tr("Usa a API do TMDB, sem endosso ou certificação do TMDB.",
-                    "This product uses the TMDB API but is not endorsed or certified by TMDB."), x, y + 78 * k, version);
+            c.drawText(Ui.tr("This product uses the TMDB API but is not endorsed or certified by TMDB."), x, y + 78 * k, version);
+            if (!Config.WATCHMODE_KEY.trim().isEmpty()) {
+                c.drawText(Ui.tr("Links to the titles by Watchmode."), x, y + 108 * k, version);
+            }
             version.setTextAlign(Paint.Align.CENTER);
-            return y + 78 * k;
+            return y + (Config.WATCHMODE_KEY.trim().isEmpty() ? 78 : 108) * k;
         }
 
         /** List row: no background; focused, white with a shadow (the Apple TV focus). Returns how focused it is. */
@@ -457,16 +470,16 @@ public class SettingsActivity extends Activity {
 
         private float drawComparison(Canvas c, float y) {
             float x = LIST_X * k + 30 * k, colA = LIST_R * k - 220 * k, colB = LIST_R * k - 30 * k;
-            c.drawText(Ui.tr("COMPARAÇÃO", "COMPARISON"), x, y, header);
+            c.drawText(Ui.tr("COMPARISON"), x, y, header);
             cellValue.setColor(0x73FFFFFF);
-            c.drawText("Original", colA, y, cellValue);
+            c.drawText(Ui.tr("Original"), colA, y, cellValue);
             c.drawText("Free My TV", colB, y, cellValue);
             cellValue.setColor(0xD9FFFFFF);
             JSONObject metrics = state.optJSONObject("metrics");
             JSONObject a = metrics == null ? null : metrics.optJSONObject(HomeMode.ORIGINAL);
             JSONObject b = metrics == null ? null : metrics.optJSONObject(HomeMode.FREE);
-            String[][] rows = {{Ui.tr("Botão Início", "Home button"), "homeMs"}, {Ui.tr("Memória livre", "Free memory"), "memAvailableMB"},
-                    {Ui.tr("Memória do Início", "Home screen memory"), "homePssMB"}};
+            String[][] rows = {{Ui.tr("Home button"), "homeMs"}, {Ui.tr("Free memory"), "memAvailableMB"},
+                    {Ui.tr("Home screen memory"), "homePssMB"}};
             for (int i = 0; i < rows.length; i++) {
                 float base = y + (46 + 40 * i) * k;
                 c.drawText(rows[i][0], x, base, cellLabel);
@@ -478,7 +491,7 @@ public class SettingsActivity extends Activity {
 
         private void drawNotices(Canvas c, float y) {
             float x = LIST_X * k + 30 * k;
-            c.drawText(Ui.tr("AVISOS", "NOTICES"), x, y, header);
+            c.drawText(Ui.tr("NOTICES"), x, y, header);
             JSONArray notices = state.optJSONArray("notices");
             int shown = 0;
             for (int i = 0; notices != null && i < notices.length() && shown < 2; i++) {
@@ -488,15 +501,15 @@ public class SettingsActivity extends Activity {
                 c.drawText(TextUtils.ellipsize(line, notice, 790 * k, TextUtils.TruncateAt.END).toString(), x, y + (42 + 38 * shown) * k, notice);
                 shown++;
             }
-            if (shown == 0) c.drawText(Ui.tr("Nenhum ainda.", "None yet."), x, y + 42 * k, notice);
+            if (shown == 0) c.drawText(Ui.tr("None yet."), x, y + 42 * k, notice);
         }
 
         /** Home screen choice: Free My TV or the original, with a check on the one in use. */
         private void drawChoice(Canvas c) {
             Paint heading = Ui.text(Ui.displaySemibold, 34 * k, 0xFFFFFFFF);
-            c.drawText(Ui.tr("Início", "Home Screen"), LIST_X * k + 30 * k, (LIST_TOP - 24) * k, heading);
-            String[][] options = {{"Free My TV", Ui.tr("Sem anúncios, com a tela de descanso nova", "No ads, with the new screensaver")},
-                    {"Original", Ui.tr("O Início de fábrica da TV", "The TV's factory home screen")}};
+            c.drawText(Ui.tr("Home Screen"), LIST_X * k + 30 * k, (LIST_TOP - 24) * k, heading);
+            String[][] options = {{"Free My TV", Ui.tr("No ads, with the new screensaver")},
+                    {Ui.tr("Original"), Ui.tr("The TV's factory home screen")}};
             int current = freeActive() ? 0 : 1;
             for (int i = 0; i < 2; i++) {
                 float y = (LIST_TOP + 20 + i * (CHOICE_H + ROW_GAP)) * k;
@@ -512,8 +525,7 @@ public class SettingsActivity extends Activity {
                 }
             }
             Paint hint = Ui.text(Ui.regular, 23 * k, 0x8CFFFFFF);
-            c.drawText(Ui.tr("A troca leva uns segundos e a tela pisca nas medições.",
-                    "Switching takes a few seconds; the screen blinks while it measures."), LIST_X * k + 30 * k,
+            c.drawText(Ui.tr("Switching takes a few seconds; the screen blinks while it measures."), LIST_X * k + 30 * k,
                     (LIST_TOP + 20 + 2 * (CHOICE_H + ROW_GAP) + 40) * k, hint);
         }
 
@@ -527,17 +539,17 @@ public class SettingsActivity extends Activity {
         private static String metric(JSONObject m, String key) {
             if (m == null || !m.has(key)) return "—";
             long v = m.optLong(key);
-            if (key.equals("homeMs")) return v + " ms";
-            if (key.equals("memAvailableMB") && v >= 1024) return String.format(Ui.locale(), "%.2f GB", v / 1024.0);
-            return v + " MB";
+            if (key.equals("homeMs")) return Ui.trf("{n} ms", "n", v);
+            if (key.equals("memAvailableMB") && v >= 1024) return Ui.trf("{n} GB", "n", String.format(Ui.locale(), "%.2f", v / 1024.0));
+            return Ui.trf("{n} MB", "n", v);
         }
 
         private static String ago(long at) {
             long minutes = Math.max(0, (System.currentTimeMillis() - at) / 60_000);
-            if (minutes < 1) return Ui.tr("agora", "now");
-            if (minutes < 60) return Ui.tr("há " + minutes + " min", minutes + " min ago");
-            if (minutes < 48 * 60) return Ui.tr("há " + (minutes / 60) + " h", (minutes / 60) + " h ago");
-            return Ui.tr("há " + (minutes / 1440) + " dias", (minutes / 1440) + " days ago");
+            if (minutes < 1) return Ui.tr("now");
+            if (minutes < 60) return Ui.trf("{n} min ago", "n", minutes);
+            if (minutes < 48 * 60) return Ui.trf("{n} h ago", "n", minutes / 60);
+            return Ui.plural("plural|one:{n} day ago|other:{n} days ago", minutes / 1440);
         }
 
         private static String versionName(Context c) {
@@ -568,7 +580,7 @@ public class SettingsActivity extends Activity {
                     if (down && screen == SHELF_EDIT) {
                         moveShelfApp(e.getKeyCode() == KeyEvent.KEYCODE_DPAD_RIGHT ? 1 : -1);
                         invalidate();
-                    } else if (down && screen == HOME_SETTINGS) {
+                    } else if (down && (screen == HOME_SETTINGS || screen == REMOTE_KEYS)) {
                         adjust(e.getKeyCode() == KeyEvent.KEYCODE_DPAD_RIGHT ? 1 : -1);
                         invalidate();
                     }
@@ -589,7 +601,10 @@ public class SettingsActivity extends Activity {
                         if (e.getRepeatCount() == 0) backDown = true;
                     } else {
                         if (backDown && !e.isCanceled()) {
-                            if (screen == PICKER) {
+                            if (screen == PICKER && (pickFor == PICK_CITY || pickFor == PICK_LANGUAGE)) {
+                                focus = pickFor == PICK_CITY ? CITY_ROW : 0;
+                                screen = HOME_SETTINGS;
+                            } else if (screen == PICKER) {
                                 focus = pickFor - 1;
                                 screen = REMOTE_KEYS;
                             } else {
@@ -609,111 +624,111 @@ public class SettingsActivity extends Activity {
 
         // MARK: - Home Settings and Remote Buttons
 
-        private static final String[] LANGUAGES = {"auto", "pt", "en", "es"}, UNITS = {"auto", "C", "F"}, THEMES = {"auto", "light", "dark"};
-        /** Home Settings rows: language, temperature, theme, cards per tab, Jellyfin profile, weather, quotes, coins. */
-        private static final int R_LANGUAGE = 0, R_TEMPERATURE = 1, R_THEME = 2, R_CARDS = 3, R_PROFILE = 4, R_WEATHER = 5,
-                R_QUOTES = 6, R_COIN = 7;
+        private static final String[] UNITS = {"auto", "C", "F"}, THEMES = {"auto", "light", "dark"};
+        /** Home Settings: language, temperature, theme, sounds, weather, city, quotes, then one row per coin. */
+        private static final int CITY_ROW = 5, COIN_ROWS = 7;
+        /** After the coins: Cards per tab, then (with a Jellyfin server) Jellyfin profile. */
+        private int cardsRow() {
+            return COIN_ROWS + 3 + (dollar() ? 1 : 0);
+        }
+
+        private int profileRow() {
+            return Jellyfin.configured() ? cardsRow() + 1 : -1;
+        }
+
+        /** Rows a little shorter when there are many, so all of them fit above the hint. */
+        private float rowH() {
+            return screen == HOME_SETTINGS && settingLabels().length > 10 ? 58 : LIST_ROW_H;
+        }
 
         private boolean dollar() {
             return "BRL".equalsIgnoreCase(Config.CURRENCY.trim());
         }
 
-        /** The rows in order (the profile only with a Jellyfin server, the dollar only for prices in reais). */
-        private int[] settingRows() {
-            List<Integer> l = new ArrayList<>(java.util.Arrays.asList(R_LANGUAGE, R_TEMPERATURE, R_THEME, R_CARDS));
-            if (Jellyfin.configured()) l.add(R_PROFILE);
-            l.addAll(java.util.Arrays.asList(R_WEATHER, R_QUOTES, R_COIN, R_COIN + 1, R_COIN + 2));
-            if (dollar()) l.add(R_COIN + 3);
-            int[] out = new int[l.size()];
-            for (int i = 0; i < out.length; i++) out[i] = l.get(i);
-            return out;
-        }
-
         private String[] settingLabels() {
-            int[] rows = settingRows();
-            String[] l = new String[rows.length];
-            for (int i = 0; i < rows.length; i++) {
-                switch (rows[i]) {
-                    case R_LANGUAGE: l[i] = Ui.tr("Idioma", "Language"); break;
-                    case R_TEMPERATURE: l[i] = Ui.tr("Temperatura", "Temperature"); break;
-                    case R_THEME: l[i] = Ui.tr("Tema", "Theme"); break;
-                    case R_CARDS: l[i] = Ui.tr("Cartões por aba", "Cards per tab"); break;
-                    case R_PROFILE: l[i] = Ui.tr("Perfil do Jellyfin", "Jellyfin profile"); break;
-                    case R_WEATHER: l[i] = Ui.tr("Widget do clima", "Weather widget"); break;
-                    case R_QUOTES: l[i] = Ui.tr("Widget de cotações", "Quotes widget"); break;
-                    default: l[i] = rows[i] == R_COIN + 3 ? Ui.tr("Dólar", "Dollar")
-                            : new String[] {"Bitcoin", "Ethereum", "Solana"}[rows[i] - R_COIN];
-                }
-            }
-            return l;
+            List<String> l = new ArrayList<>();
+            l.add(Ui.tr("Language"));
+            l.add(Ui.tr("Temperature"));
+            l.add(Ui.tr("Theme"));
+            l.add(Ui.tr("Navigation sounds"));
+            l.add(Ui.tr("Weather widget"));
+            l.add(Ui.tr("City"));
+            l.add(Ui.tr("Quotes widget"));
+            l.add("Bitcoin");
+            l.add("Ethereum");
+            l.add("Solana");
+            if (dollar()) l.add(Ui.tr("Dollar"));
+            l.add(Ui.tr("Cards per tab"));
+            if (Jellyfin.configured()) l.add(Ui.tr("Jellyfin profile"));
+            return l.toArray(new String[0]);
         }
 
         private String[] settingValues() {
-            int[] rows = settingRows();
-            String[] v = new String[rows.length];
-            for (int i = 0; i < rows.length; i++) {
-                switch (rows[i]) {
-                    case R_LANGUAGE: {
-                        String lang = Prefs.language();
-                        v[i] = lang.equals("pt") ? "Português" : lang.equals("en") ? "English" : lang.equals("es") ? "Español" : Ui.tr("Automático", "Automatic");
-                        break;
-                    }
-                    case R_TEMPERATURE: {
-                        String unit = Prefs.temperature();
-                        v[i] = unit.equals("C") ? "°C" : unit.equals("F") ? "°F" : Ui.tr("Automática", "Automatic");
-                        break;
-                    }
-                    case R_THEME: {
-                        String theme = Prefs.theme();
-                        v[i] = theme.equals("light") ? Ui.tr("Claro", "Light") : theme.equals("dark") ? Ui.tr("Escuro", "Dark") : Ui.tr("Automático", "Automatic");
-                        break;
-                    }
-                    case R_CARDS: v[i] = String.valueOf(Prefs.cards()); break;
-                    case R_PROFILE: v[i] = Prefs.jellyfinUser(); break;
-                    case R_WEATHER: v[i] = onOff(Prefs.weather()); break;
-                    case R_QUOTES: v[i] = onOff(Prefs.quotes()); break;
-                    // No quotes widget, nowhere to show prices: the coins read as off (and stay locked) until it is back on.
-                    default: v[i] = onOff(Prefs.quotes() && Prefs.coin(rows[i] - R_COIN));
-                }
-            }
+            String[] labels = settingLabels();
+            String[] v = new String[labels.length];
+            String lang = Prefs.language();
+            v[0] = lang.equals("auto") ? Ui.tr("Automatic") : Ui.languageName(lang);
+            String unit = Prefs.temperature();
+            v[1] = unit.equals("C") ? "°C" : unit.equals("F") ? "°F" : Ui.tr("unit|Automatic");
+            String theme = Prefs.theme();
+            v[2] = theme.equals("light") ? Ui.tr("Light") : theme.equals("dark") ? Ui.tr("Dark") : Ui.tr("Automatic");
+            v[3] = onOff(Prefs.sounds());
+            v[4] = onOff(Prefs.weather());
+            v[CITY_ROW] = !cityStatus.isEmpty() ? cityStatus : Prefs.city().isEmpty() ? "—" : Prefs.city();
+            v[6] = onOff(Prefs.quotes());
+            // No quotes widget, nowhere to show prices: the coins read as off (and stay locked) until it is back on.
+            for (int i = COIN_ROWS; i < cardsRow(); i++) v[i] = onOff(Prefs.quotes() && Prefs.coin(i - COIN_ROWS));
+            v[cardsRow()] = String.valueOf(Prefs.cards());
+            if (profileRow() >= 0) v[profileRow()] = Prefs.jellyfinUser();
+            return v;
+        }
+
+        /** "auto", then English and every language with a catalogue. */
+        private static String[] languageChoices() {
+            String[] all = Ui.languages();
+            String[] v = new String[all.length + 1];
+            v[0] = "auto";
+            System.arraycopy(all, 0, v, 1, all.length);
             return v;
         }
 
         private static String onOff(boolean on) {
-            return on ? Ui.tr("Ligado", "On") : Ui.tr("Desligado", "Off");
+            return on ? Ui.tr("On") : Ui.tr("Off");
         }
 
         private String[] keyLabels() {
-            if (RemoteKeys.philips()) return new String[] {Ui.tr("Botão Prime Video", "Prime Video button")};
-            return new String[] {Ui.tr("Botão Netflix", "Netflix button"), Ui.tr("Botão YouTube", "YouTube button"),
-                    Ui.tr("Botão Prime Video", "Prime Video button"), Ui.tr("Botão TCL Channel", "TCL Channel button")};
+            if (RemoteKeys.PHILIPS) return new String[] {Ui.tr("Prime Video button")};
+            if (RemoteKeys.STEM_NETFLIX) return new String[] {Ui.tr("Netflix button")};
+            if (RemoteKeys.KTC) return new String[] {Ui.tr("Tabii button")};
+            if (RemoteKeys.SONY) return new String[] {Ui.tr("BRAVIA CORE button"),
+                    Ui.tr("Netflix button"), Ui.tr("Disney+ button"),
+                    Ui.tr("Prime Video button"), Ui.tr("YouTube button"),
+                    Ui.tr("Crunchyroll button"), Ui.tr("Google Play button")};
+            return new String[] {Ui.tr("Netflix button"), Ui.tr("YouTube button"),
+                    Ui.tr("Prime Video button"), Ui.tr("TCL Channel button")};
         }
 
         private String[] keyValues() {
-            String[] v = new String[Prefs.keys().length];
+            String[] v = new String[Prefs.KEYS.length];
             for (int i = 0; i < v.length; i++) {
-                int at = appPkgs.indexOf(Prefs.keyApp(Prefs.keys()[i]));
-                v[i] = at >= 0 ? appLabels.get(at) : Ui.tr("Não instalado", "Not installed");
+                int at = appPkgs.indexOf(Prefs.keyApp(Prefs.KEYS[i]));
+                v[i] = at >= 0 ? appLabels.get(at) : Ui.tr("Not installed");
             }
             return v;
         }
 
         /** Installed TV apps, by name, after "Nothing": what a remote button can open. */
         private void loadApps() {
-            PackageManager pm = getContext().getPackageManager();
             List<String[]> found = new ArrayList<>();
-            Set<String> seen = new HashSet<>();
-            Intent query = new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LEANBACK_LAUNCHER);
-            for (ResolveInfo ri : pm.queryIntentActivities(query, 0)) {
-                String pkg = ri.activityInfo.packageName;
-                if (pkg.equals(getContext().getPackageName()) || !seen.add(pkg)) continue;
-                found.add(new String[] {pkg, String.valueOf(ri.loadLabel(pm))});
+            for (String[] app : HomeApps.launchable(getContext())) {
+                if (!app[0].equals(getContext().getPackageName())) found.add(app);
             }
             Collections.sort(found, (a, b) -> a[1].toLowerCase(Locale.ROOT).compareTo(b[1].toLowerCase(Locale.ROOT)));
             appPkgs.clear();
             appLabels.clear();
             appPkgs.add("");
-            appLabels.add(Ui.tr("Nada", "Nothing"));
+            // On Sony, "nothing" leaves the key to the TV, which opens its usual app.
+            appLabels.add(RemoteKeys.SONY ? Ui.tr("Sony default") : Ui.tr("Nothing"));
             for (String[] f : found) {
                 appPkgs.add(f[0]);
                 appLabels.add(f[1]);
@@ -724,55 +739,102 @@ public class SettingsActivity extends Activity {
         private void adjust(int dir) {
             if (screen == REMOTE_KEYS) {
                 int n = appPkgs.size();
-                int at = appPkgs.indexOf(Prefs.keyApp(Prefs.keys()[focus]));
+                int at = appPkgs.indexOf(Prefs.keyApp(Prefs.KEYS[focus]));
                 int next = at < 0 ? (dir > 0 ? 0 : n - 1) : (at + dir + n) % n;
-                Prefs.setKeyApp(Prefs.keys()[focus], appPkgs.get(next));
+                Prefs.setKeyApp(Prefs.KEYS[focus], appPkgs.get(next));
                 return;
             }
-            int[] rows = settingRows();
-            if (focus >= rows.length) return;
-            switch (rows[focus]) {
-                case R_LANGUAGE: {
-                    int at = java.util.Arrays.asList(LANGUAGES).indexOf(Prefs.language());
-                    Prefs.setLanguage(LANGUAGES[(at + dir + LANGUAGES.length) % LANGUAGES.length]);
-                    break;
-                }
-                case R_TEMPERATURE: {
+            switch (focus) {
+                case 0: break;   // OK opens the language picker.
+                case 1: {
                     int at = java.util.Arrays.asList(UNITS).indexOf(Prefs.temperature());
                     Prefs.setTemperature(UNITS[(at + dir + UNITS.length) % UNITS.length]);
                     break;
                 }
-                case R_THEME: {
+                case 2: {
                     int at = java.util.Arrays.asList(THEMES).indexOf(Prefs.theme());
                     Prefs.setTheme(THEMES[(at + dir + THEMES.length) % THEMES.length]);
                     break;
                 }
-                case R_CARDS: {
-                    int n = Prefs.CARD_COUNTS.length, at = 0;
-                    for (int i = 0; i < n; i++) if (Prefs.CARD_COUNTS[i] == Prefs.cards()) at = i;
-                    Prefs.setCards(Prefs.CARD_COUNTS[(at + dir + n) % n]);
-                    break;
-                }
-                case R_PROFILE: {
-                    // The server's users, asked for when Home Settings opened; not there yet: ask again.
-                    List<String> users = Jellyfin.users();
-                    if (users.isEmpty()) {
-                        Jellyfin.loadUsers(this::postInvalidate);
-                        return;
-                    }
-                    int at = 0;
-                    for (int i = 0; i < users.size(); i++) if (users.get(i).equalsIgnoreCase(Prefs.jellyfinUser())) at = i;
-                    Prefs.setJellyfinUser(users.get((at + dir + users.size()) % users.size()));
-                    break;
-                }
-                case R_WEATHER: Prefs.setWeather(!Prefs.weather()); break;
-                case R_QUOTES: Prefs.setQuotes(!Prefs.quotes()); break;
+                case 3: Prefs.setSounds(!Prefs.sounds()); break;
+                case 4: Prefs.setWeather(!Prefs.weather()); break;
+                case CITY_ROW: return;
+                case 6: Prefs.setQuotes(!Prefs.quotes()); break;
                 default:
+                    if (focus == cardsRow()) {
+                        int count = Prefs.CARD_COUNTS.length, at = 0;
+                        for (int i = 0; i < count; i++) if (Prefs.CARD_COUNTS[i] == Prefs.cards()) at = i;
+                        Prefs.setCards(Prefs.CARD_COUNTS[(at + dir + count) % count]);
+                        break;
+                    }
+                    if (focus == profileRow()) {
+                        // The server's users, asked for when Home Settings opened; not there yet: ask again.
+                        List<String> users = Jellyfin.users();
+                        if (users.isEmpty()) {
+                            Jellyfin.loadUsers(this::postInvalidate);
+                            return;
+                        }
+                        int at = 0;
+                        for (int i = 0; i < users.size(); i++) if (users.get(i).equalsIgnoreCase(Prefs.jellyfinUser())) at = i;
+                        Prefs.setJellyfinUser(users.get((at + dir + users.size()) % users.size()));
+                        break;
+                    }
                     if (!Prefs.quotes()) return;
-                    Prefs.setCoin(rows[focus] - R_COIN, !Prefs.coin(rows[focus] - R_COIN));
+                    Prefs.setCoin(focus - COIN_ROWS, !Prefs.coin(focus - COIN_ROWS));
                     break;
             }
             HomeData.get(getContext()).settingsChanged();
+        }
+
+        private void askCity() {
+            if (Ui.tr("Searching…").equals(cityStatus)) return;
+            EditText field = new EditText(activity);
+            field.setSingleLine(true);
+            field.setHint(Ui.tr("Type the city's name"));
+            field.setImeOptions(EditorInfo.IME_ACTION_SEARCH);
+            AlertDialog dialog = new AlertDialog.Builder(activity, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                    .setTitle(Ui.tr("City"))
+                    .setView(field)
+                    .setPositiveButton(Ui.tr("Search"), (d, which) -> searchCity(field.getText().toString()))
+                    .setNegativeButton(Ui.tr("Cancel"), null)
+                    .create();
+            field.setOnEditorActionListener((v, action, event) -> {
+                dialog.dismiss();
+                searchCity(field.getText().toString());
+                return true;
+            });
+            dialog.show();
+        }
+
+        private void searchCity(String name) {
+            if (name.trim().isEmpty()) return;
+            cityStatus = Ui.tr("Searching…");
+            invalidate();
+            new Thread(() -> {
+                List<String[]> found;
+                String error;
+                try {
+                    found = HomeData.findCity(name);
+                    error = found.isEmpty() ? Ui.tr("No city with that name.") : "";
+                } catch (Exception e) {
+                    found = new ArrayList<>();
+                    error = Ui.trf("Couldn't search now: {error}", "error", e.getMessage());
+                    AppLog.w("city search: " + e.getMessage());
+                }
+                List<String[]> result = found;
+                String message = error;
+                handler.post(() -> {
+                    cityStatus = message;
+                    if (!result.isEmpty() && screen == HOME_SETTINGS) {
+                        cities.clear();
+                        cities.addAll(result);
+                        openPicker(PICK_CITY);
+                        spoken.focusMoved();
+                    }
+                    invalidate();
+                    if (!message.isEmpty()) handler.postDelayed(() -> { cityStatus = ""; invalidate(); }, 4000);
+                });
+            }).start();
         }
 
         private boolean scrolling() {
@@ -787,7 +849,10 @@ public class SettingsActivity extends Activity {
 
         private void openShelfEditor() {
             shelfOrder.clear();
-            shelfOrder.addAll(HomeApps.shelfPackages(getContext()));
+            // Only the apps the shelf shows: one that was uninstalled would hold a place (and count toward the limit)
+            // without a row to take it off.
+            PackageManager pm = getContext().getPackageManager();
+            for (String pkg : HomeApps.shelfPackages(getContext())) if (HomeApps.launchIntent(pm, pkg) != null) shelfOrder.add(pkg);
             rebuildShelfRows(HomeApps.shelfCandidates(getContext()));
             pickScroll = 0;
             focus = 0;
@@ -839,7 +904,7 @@ public class SettingsActivity extends Activity {
 
         private void drawShelfEditor(Canvas c) {
             Paint heading = Ui.text(Ui.displaySemibold, 34 * k, 0xFFFFFFFF);
-            c.drawText(Ui.tr("Prateleira", "Shelf"), LIST_X * k + 30 * k, (LIST_TOP - 24) * k, heading);
+            c.drawText(Ui.tr("Shelf"), LIST_X * k + 30 * k, (LIST_TOP - 24) * k, heading);
             int rows = rowCount();
             for (int i = 0; i < rows; i++) {
                 String[] app = shelfRows.get(pickScroll + i);
@@ -851,20 +916,29 @@ public class SettingsActivity extends Activity {
                 rowValue.setColor(blend(0xB3FFFFFF, 0xB31C1C1E, f));
                 float base = rowRect.centerY() + Ui.halfCap(rowLabel);
                 c.drawText(TextUtils.ellipsize(app[1], new TextPaint(rowLabel), 520 * k, TextUtils.TruncateAt.END).toString(), rowRect.left + 30 * k, base, rowLabel);
-                c.drawText(place >= 0 ? "#" + (place + 1) : Ui.tr("Fora", "Off"), rowRect.right - 30 * k, base, rowValue);
+                c.drawText(place >= 0 ? "#" + (place + 1) : Ui.tr("shelf|Off"), rowRect.right - 30 * k, base, rowValue);
             }
             Paint hint = Ui.text(Ui.regular, 23 * k, 0x8CFFFFFF);
             float hy = (LIST_TOP + 20 + rows * (LIST_ROW_H + LIST_ROW_GAP) + 36) * k;
-            c.drawText(Ui.tr("OK põe ou tira da prateleira (até " + HomeApps.MAX_SHELF + "). ← → mudam a ordem.",
-                    "OK adds or removes (up to " + HomeApps.MAX_SHELF + "). ← → change the order.",
-                    "OK pone o quita del estante (hasta " + HomeApps.MAX_SHELF + "). ← → cambian el orden."), LIST_X * k + 30 * k, hy, hint);
+            c.drawText(Ui.trf("OK adds or removes (up to {n}). ← → change the order.", "n", HomeApps.MAX_SHELF), LIST_X * k + 30 * k, hy, hint);
         }
 
         private void openPicker(int which) {
             pickFor = which;
             pickLabels.clear();
-            pickLabels.addAll(appLabels);
-            pickCurrent = appPkgs.indexOf(Prefs.keyApp(Prefs.keys()[which - 1]));
+            if (which == PICK_CITY) {
+                for (String[] city : cities) pickLabels.add(city[0]);
+                pickCurrent = -1;
+            } else if (which == PICK_LANGUAGE) {
+                String[] choices = languageChoices();
+                for (String code : choices) {
+                    pickLabels.add(code.equals("auto") ? Ui.tr("Automatic") : Ui.languageName(code));
+                }
+                pickCurrent = java.util.Arrays.asList(choices).indexOf(Prefs.language());
+            } else {
+                pickLabels.addAll(appLabels);
+                pickCurrent = appPkgs.indexOf(Prefs.keyApp(Prefs.KEYS[which - 1]));
+            }
             int visible = Math.min(PICK_VISIBLE, pickLabels.size());
             int at = Math.max(0, pickCurrent);
             pickScroll = Math.max(0, Math.min(at - 3, pickLabels.size() - visible));
@@ -875,7 +949,8 @@ public class SettingsActivity extends Activity {
         /** A long list (the apps): nine rows at a time, the one in use checked. */
         private void drawPicker(Canvas c) {
             Paint heading = Ui.text(Ui.displaySemibold, 34 * k, 0xFFFFFFFF);
-            String title = keyLabels()[pickFor - 1];
+            String title = pickFor == PICK_CITY ? Ui.tr("City")
+                    : pickFor == PICK_LANGUAGE ? Ui.tr("Language") : keyLabels()[pickFor - 1];
             c.drawText(title, LIST_X * k + 30 * k, (LIST_TOP - 24) * k, heading);
             int rows = rowCount();
             for (int i = 0; i < rows; i++) {
@@ -892,7 +967,7 @@ public class SettingsActivity extends Activity {
             }
             Paint hint = Ui.text(Ui.regular, 23 * k, 0x8CFFFFFF);
             float hy = (LIST_TOP + 20 + rows * (LIST_ROW_H + LIST_ROW_GAP) + 36) * k;
-            c.drawText((pickScroll + focus + 1) + " / " + pickLabels.size() + "  ·  " + Ui.tr("OK escolhe, Voltar cancela.", "OK picks, Back cancels."),
+            c.drawText((pickScroll + focus + 1) + " / " + pickLabels.size() + "  ·  " + Ui.tr("OK picks, Back cancels."),
                     LIST_X * k + 30 * k, hy, hint);
         }
 
@@ -900,16 +975,15 @@ public class SettingsActivity extends Activity {
             boolean keys = screen == REMOTE_KEYS;
             String[] labels = keys ? keyLabels() : settingLabels();
             String[] values = keys ? keyValues() : settingValues();
-            int[] rows = keys ? null : settingRows();
             Paint heading = Ui.text(Ui.displaySemibold, 34 * k, 0xFFFFFFFF);
-            c.drawText(keys ? Ui.tr("Botões do Controle", "Remote Buttons") : Ui.tr("Ajustes do Início", "Home Settings"),
+            c.drawText(keys ? Ui.tr("Remote Buttons") : Ui.tr("Home Settings"),
                     LIST_X * k + 30 * k, (LIST_TOP - 24) * k, heading);
             for (int i = 0; i < labels.length; i++) {
-                float y = (LIST_TOP + 20 + i * (LIST_ROW_H + LIST_ROW_GAP)) * k;
-                rowRect.set(LIST_X * k, y, LIST_R * k, y + LIST_ROW_H * k);
+                float y = (LIST_TOP + 20 + i * (rowH() + LIST_ROW_GAP)) * k;
+                rowRect.set(LIST_X * k, y, LIST_R * k, y + rowH() * k);
                 float f = drawRowBackground(c, i);
                 rowLabel.setColor(blend(0xF2FFFFFF, INK, f));
-                boolean locked = !keys && rows[i] >= R_COIN && !Prefs.quotes();
+                boolean locked = !keys && i >= COIN_ROWS && i < cardsRow() && !Prefs.quotes();
                 rowValue.setColor(blend(locked ? 0x59FFFFFF : 0xB3FFFFFF, locked ? 0x591C1C1E : 0xB31C1C1E, f));
                 if (locked) rowLabel.setColor(blend(0x73FFFFFF, 0x731C1C1E, f));
                 float base = rowRect.centerY() + Ui.halfCap(rowLabel);
@@ -917,15 +991,16 @@ public class SettingsActivity extends Activity {
                 c.drawText(values[i], rowRect.right - 30 * k, base, rowValue);
             }
             Paint hint = Ui.text(Ui.regular, 23 * k, 0x8CFFFFFF);
-            float hy = (LIST_TOP + 20 + labels.length * (LIST_ROW_H + LIST_ROW_GAP) + 36) * k;
-            c.drawText(Ui.tr("OK ou as setas mudam o valor.", "OK or the arrows change the value."), LIST_X * k + 30 * k, hy, hint);
+            float hy = (LIST_TOP + 20 + labels.length * (rowH() + LIST_ROW_GAP) + 36) * k;
+            c.drawText(Ui.tr("OK or the arrows change the value."), LIST_X * k + 30 * k, hy, hint);
             if (keys) {
-                c.drawText(RemoteKeys.philips() ? Ui.tr("Os outros botões de apps: a própria TV os controla.",
-                        "The other app buttons: the TV itself controls them.")
-                        : RemoteKeys.supported() ? Ui.tr("Disney e Globoplay: a própria TV controla esses botões.",
-                        "Disney and Globoplay: the TV itself controls those buttons.")
-                        : Ui.tr("Esses são os botões do controle da TCL: nesta TV, os botões funcionam como sempre.",
-                        "These are the TCL remote's buttons: on this TV, the buttons work as they always did."), LIST_X * k + 30 * k, hy + 38 * k, hint);
+                c.drawText(RemoteKeys.PHILIPS ? Ui.tr("The other buttons: the TV itself controls them.")
+                        : RemoteKeys.VESTEL ? Ui.tr("YouTube, Prime Video and Google Play: the TV itself controls those buttons.")
+                        : RemoteKeys.KTC ? Ui.tr("Netflix, YouTube and Prime Video: the TV itself controls those buttons.")
+                        : RemoteKeys.SONY ? Ui.tr("Sony default: the button opens what it always did.")
+                        : RemoteKeys.FORMOVIE ? Ui.tr("The other buttons: the TV itself controls them.")
+                        : RemoteKeys.supported() ? Ui.tr("Disney and Globoplay: the TV itself controls those buttons.")
+                        : Ui.tr("TCL remote buttons: on this TV they work as always."), LIST_X * k + 30 * k, hy + 38 * k, hint);
             }
         }
 
@@ -933,15 +1008,26 @@ public class SettingsActivity extends Activity {
             Context c = getContext();
             if (screen == HOME_CHOICE) {
                 boolean wantFree = focus == 0;
-                if (wantFree != freeActive() && !busy()) {
+                boolean already = wantFree ? freeActive() : HomeMode.ORIGINAL.equals(state.optString("mode", HomeMode.ORIGINAL));
+                if (!already && !busy()) {
                     HomeMode.request(c, wantFree ? HomeMode.FREE : HomeMode.ORIGINAL);
                     pendingAt = SystemClock.uptimeMillis();
                 }
                 screen = MAIN;
                 focus = 0;
+            } else if (screen == PICKER && pickFor == PICK_CITY) {
+                String[] city = cities.get(pickScroll + focus);
+                Prefs.setCity(city[1], city[2], city[3]);
+                HomeData.get(c).settingsChanged();
+                focus = CITY_ROW;
+                screen = HOME_SETTINGS;
+            } else if (screen == PICKER && pickFor == PICK_LANGUAGE) {
+                Prefs.setLanguage(languageChoices()[pickScroll + focus]);
+                focus = 0;
+                screen = HOME_SETTINGS;
             } else if (screen == PICKER) {
                 int at = pickScroll + focus;
-                Prefs.setKeyApp(Prefs.keys()[pickFor - 1], appPkgs.get(at));
+                Prefs.setKeyApp(Prefs.KEYS[pickFor - 1], appPkgs.get(at));
                 focus = pickFor - 1;
                 screen = REMOTE_KEYS;
             } else if (screen == SHELF_EDIT) {
@@ -950,6 +1036,11 @@ public class SettingsActivity extends Activity {
                 return;
             } else if (screen == REMOTE_KEYS) {
                 openPicker(focus + 1);
+            } else if (screen == HOME_SETTINGS && focus == 0) {
+                openPicker(PICK_LANGUAGE);
+            } else if (screen == HOME_SETTINGS && focus == CITY_ROW) {
+                askCity();
+                return;
             } else if (screen == HOME_SETTINGS) {
                 adjust(1);
                 invalidate();

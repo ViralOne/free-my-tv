@@ -43,7 +43,7 @@ final class Seerr {
         JSONObject body = new JSONObject().put("mediaType", tv ? "tv" : "movie").put("mediaId", p.id);
         if (!tv) {
             if (info != null && info.optInt("status") >= MEDIA_PENDING) {
-                plan.why = Ui.tr("Já foi pedido.", "Already requested.", "Ya está pedido.");
+                plan.why = Ui.tr("Already requested.");
                 return plan;
             }
             plan.what = p.title;
@@ -71,13 +71,13 @@ final class Seerr {
             if (n > 0 && !taken.contains(n)) open.put(n);     // specials (season 0) are left out
         }
         if (open.length() == 0) {
-            plan.why = Ui.tr("Já foi pedido.", "Already requested.", "Ya está pedido.");
+            plan.why = Ui.tr("Already requested.");
             return plan;
         }
         body.put("seasons", open);
         plan.what = open.length() == 1
-                ? Ui.tr("a temporada ", "season ", "la temporada ") + open.getInt(0) + Ui.tr(" de ", " of ", " de ") + p.title
-                : p.title + " (" + open.length() + Ui.tr(" temporadas)", " seasons)", " temporadas)");
+                ? Ui.trf("season {n} of {title}", "n", open.getInt(0), "title", p.title)
+                : Ui.trf("{title} ({n} seasons)", "title", p.title, "n", open.length());
         plan.body = body;
         return plan;
     }
@@ -85,7 +85,7 @@ final class Seerr {
     /** Sends the request; returns the sentence for the toast. Runs off the UI thread. */
     static String request(Plan plan) throws IOException {
         send("POST", "/api/v1/request", plan.body.toString());
-        return Ui.tr("Pedido: ", "Requested: ", "Pedido: ") + plan.what + ".";
+        return Ui.trf("Requested: {what}.", "what", plan.what);
     }
 
     private static String send(String method, String path, String body) throws IOException {
@@ -103,7 +103,7 @@ final class Seerr {
             }
             int code = c.getResponseCode();
             if (code == 401 || code == 403) throw new IOException("Jellyseerr rejected the key");
-            if (code == 409) throw new IOException(Ui.tr("já foi pedido", "already requested", "ya está pedido"));
+            if (code == 409) throw new IOException(Ui.tr("already requested"));
             if (code < 200 || code >= 300) throw new IOException("Jellyseerr returned HTTP " + code);
             ByteArrayOutputStream out = new ByteArrayOutputStream();
             try (InputStream in = c.getInputStream()) {

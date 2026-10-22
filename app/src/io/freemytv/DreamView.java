@@ -47,6 +47,10 @@ final class DreamView extends View implements Choreographer.FrameCallback, HomeD
     private static final float MARGIN = 80, RIGHT = 1840, TITLE_W = 900, META_BASE = 1008;
     private static final float DATE_BASE = 92, CLOCK_TOP = 120, CLOCK_SIZE = 200, QUOTES_GAP = 52;
     private static final double DRIFT_PERIOD_S = 600;
+    // The high and low and the stale prices line, made again only when they change (drawn on every frame).
+    private String range = "", staleLine = "", staleFor = "";
+    private HomeData.Weather rangeWeather;
+    private int rangeGeneration = -1, rangePrefs = -1, staleGeneration = -1;
 
     /** One photo on screen: the image, its motion (zooming in or out, toward a corner) and its caption. */
     private static final class Slide {
@@ -93,7 +97,7 @@ final class DreamView extends View implements Choreographer.FrameCallback, HomeD
         }
     }
 
-    private final Scene scene = new Scene();
+    private final Scene scene = new Scene(false);
     private final HomeData data;
     private final Recs recs;
     private final Handler handler = new Handler(Looper.getMainLooper());
@@ -149,7 +153,7 @@ final class DreamView extends View implements Choreographer.FrameCallback, HomeD
         try {
             glassShader = new RuntimeShader(Shaders.GLASS_TEXT);
             glassPaint.setShader(glassShader);
-        } catch (RuntimeException | LinkageError e) {   // Android 9 to 12: no AGSL
+        } catch (RuntimeException | LinkageError e) {   // Android 8 to 12: no AGSL
             AppLog.w("glass clock unavailable: " + e.getMessage());
             glassShader = null;
         }
@@ -754,8 +758,12 @@ final class DreamView extends View implements Choreographer.FrameCallback, HomeD
             float base = clockBase + 76 * k;
             String symbol = Symbols.weather(wx.code, wx.isDay);
             String now = HomeData.degrees(wx.temp);
-            String range = Ui.en ? "H:" + HomeData.degrees(wx.max) + "  L:" + HomeData.degrees(wx.min)
-                    : "Máx. " + HomeData.degrees(wx.max) + "  Mín. " + HomeData.degrees(wx.min);
+            if (wx != rangeWeather || Ui.generation != rangeGeneration || Prefs.version != rangePrefs) {
+                range = HomeData.highLow(wx, "  ");
+                rangeWeather = wx;
+                rangeGeneration = Ui.generation;
+                rangePrefs = Prefs.version;
+            }
             float sw = Symbols.width(getContext(), symbol, 32 * k);
             float width = sw + 12 * k + weatherPaint.measureText(now) + 18 * k + weatherDim.measureText(range);
             float x = cx - width / 2;
@@ -784,6 +792,13 @@ final class DreamView extends View implements Choreographer.FrameCallback, HomeD
             x += quotePaint.measureText(values[i]) + spacing;
         }
         String stale = HomeData.staleness(data.pricesAt, 5 * 60_000L);
-        if (!stale.isEmpty() && values.length > 0) c.drawText(Ui.tr("cotações de ", "prices from ") + stale, cx, base + 38 * k, stalePaint);
+        if (!stale.isEmpty() && values.length > 0) {
+            if (!stale.equals(staleFor) || Ui.generation != staleGeneration) {
+                staleLine = Ui.trf("prices from {ago}", "ago", stale);
+                staleFor = stale;
+                staleGeneration = Ui.generation;
+            }
+            c.drawText(staleLine, cx, base + 38 * k, stalePaint);
+        }
     }
 }

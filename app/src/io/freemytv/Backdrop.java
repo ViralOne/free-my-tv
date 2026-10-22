@@ -9,7 +9,8 @@ import android.graphics.Shader;
 
 /**
  * The home screen background made from the recommendation's image, built once in the background:
- *  - the photo cropped to 16:9 at 1920×1080 (the TV's UI size), with the dark scrims already applied (on the left,
+ *  - the photo cropped to 16:9 at the TV's UI size (1920×1080; 1280×720 on TVs that draw their UI at 720p, like TCL's
+ *    1 GB models, where every bitmap here is 2/3 as wide), with the dark scrims already applied (on the left,
  *    where the hero text sits; at the bottom, behind the shelf; a faint one at the top, behind the buttons); the left
  *    scrim gets stronger when the photo is bright there;
  *  - the frosted version (192×108, heavily blurred) of the same image: the background of the frosted glass and of the
@@ -22,9 +23,21 @@ import android.graphics.Shader;
  * The final image lives only in GPU memory (HARDWARE): drawing it costs one texture, and the process doesn't hold 8 MB.
  */
 final class Backdrop {
-    static final int W = 1920, H = 1080, FW = 192, FH = 108, GW = 480, GH = 270;
+    /** The UI's size against 1920×1080 (at most 1): nothing is built bigger than the screen can show. */
+    private static final float UI_SCALE = uiScale();
+    static final int W = ui(1920), H = ui(1080), FW = 192, FH = 108, GW = 480, GH = 270;
     /** The cards at their focused size (1.05×): the wide one and the two tall ones. */
-    static final int WIDE_W = 1092, WIDE_H = 464, TALL_W = 336, TALL_H = 464;
+    static final int WIDE_W = ui(1092), WIDE_H = ui(464), TALL_W = ui(336), TALL_H = ui(464);
+
+    private static float uiScale() {
+        android.util.DisplayMetrics m = android.content.res.Resources.getSystem().getDisplayMetrics();
+        int longest = Math.max(m.widthPixels, m.heightPixels);
+        return longest > 0 ? Math.min(1f, longest / 1920f) : 1f;
+    }
+
+    private static int ui(int px) {
+        return Math.round(px * UI_SCALE);
+    }
     final Bitmap image;
     final int[] frost;      // heavily blurred (frosted glass, bottom drawer)
     final int[] glass;      // lightly blurred (Liquid Glass: the photo shows through the glass)
