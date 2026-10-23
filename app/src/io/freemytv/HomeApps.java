@@ -186,6 +186,43 @@ final class HomeApps {
         return out;
     }
 
+    // MARK: - Top buttons (the round ones at the top right)
+
+    static final String TOP_LIVE = "live", TOP_INPUTS = "inputs", TOP_SETTINGS = "settings";
+    static final List<String> TOP_DEFAULT = Collections.unmodifiableList(java.util.Arrays.asList(TOP_LIVE, TOP_INPUTS, TOP_SETTINGS));
+    static final int MAX_TOP = TOP_DEFAULT.size();
+
+    /** The keys of the top buttons, in order (Settings > Top Buttons; by default Live TV, HDMI Inputs, Settings). */
+    static List<String> topButtonKeys() {
+        List<String> saved = Prefs.topButtons();
+        if (saved == null) return TOP_DEFAULT;
+        List<String> keys = new ArrayList<>();
+        for (String key : saved) if (TOP_DEFAULT.contains(key) && !keys.contains(key)) keys.add(key);
+        return keys;
+    }
+
+    /** The top buttons, ready to draw (0 to 3 of them). */
+    static List<Item> topButtons() {
+        List<Item> items = new ArrayList<>();
+        for (String key : topButtonKeys()) items.add(topButton(key));
+        return items;
+    }
+
+    private static Item topButton(String key) {
+        switch (key) {
+            case TOP_LIVE: return action(LIVE_TV, TOP_LIVE, Ui.tr("light|Live TV"), "live_tv");
+            case TOP_INPUTS: return action(INPUTS, TOP_INPUTS, Ui.tr("HDMI Inputs"), "hdmi");
+            default: return action(SETTINGS, TOP_SETTINGS, Ui.tr("light|Settings"), "settings");
+        }
+    }
+
+    /** What can go in the top buttons, as {key, name}. */
+    static List<String[]> topCandidates() {
+        List<String[]> out = new ArrayList<>();
+        for (String key : TOP_DEFAULT) out.add(new String[] {key, topButton(key).label});
+        return out;
+    }
+
     /** Live TV, the HDMI inputs with a device sending a signal, and All Apps. */
     static List<Item> shortcuts(Context c) {
         List<Item> items = new ArrayList<>();

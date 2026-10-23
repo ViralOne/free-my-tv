@@ -113,7 +113,8 @@ var TV = (function () {
     'UCJa2s9hhC.TED': 'icons/ted.svg',
     'QizQxC7CUf.PlayMovies': 'icons/googleplay.svg',
     'vIutycUzou.SteamLink': 'icons/steam.svg',
-    'geUOM7qimf.FOXPlay': 'icons/fox.svg'
+    'geUOM7qimf.FOXPlay': 'icons/fox.svg',
+    'AprZAARz4r.Jellyfin': 'icons/jellyfin.svg'
   };
 
   // Names Smart Hub gets wrong: HBO's app has none (so it never reached the shelf), others are long or old.
@@ -144,7 +145,8 @@ var TV = (function () {
     ['com.disney.disneyplus-prod', 'Disney+'], ['com.wbd.stream', 'HBO Max'], ['com.hbo.hbomax', 'Max'],
     ['com.apple.appletv', 'Apple TV'], ['hulu', 'Hulu'], ['com.peacock.tv', 'Peacock'], ['com.nfl.app', 'NFL'],
     ['globoplaywebos', 'Globoplay'], ['spotify-beehive', 'Spotify'], ['tv.twitch.tv.starshot.lg', 'Twitch'],
-    ['cdp-30', 'Plex'], ['com.crunchyroll.webapp', 'Crunchyroll'], ['com.webos.app.browser', 'Web Browser']
+    ['cdp-30', 'Plex'], ['org.jellyfin.webos', 'Jellyfin'], ['com.crunchyroll.webapp', 'Crunchyroll'],
+    ['com.webos.app.browser', 'Web Browser']
   ];
 
   function knownApps(done) {
@@ -203,11 +205,16 @@ var TV = (function () {
     }
   }
 
-  /** The video sources the TV reports ([{type: 'TV' | 'HDMI' | ..., number}]), or null when it doesn't tell. */
-  function samsungSources(done) {
+  /**
+   * The video sources the TV reports ([{type: 'TV' | 'HDMI' | ..., number}]), or null when it doesn't tell. With `all`,
+   * the disconnected ones too: Tizen 4 lists an HDMI device on standby as disconnected (even the one on screen), and
+   * tvwindow.setSource still switches to it, as Samsung's own source menu does.
+   */
+  function samsungSources(done, all) {
     try {
-      window.tizen.systeminfo.getPropertyValue('VIDEOSOURCE', function (v) { done(v && v.connected ? v.connected : null); },
-          function () { done(null); });
+      window.tizen.systeminfo.getPropertyValue('VIDEOSOURCE', function (v) {
+        done(v && v.connected ? (all ? v.connected.concat(v.disconnected || []) : v.connected) : null);
+      }, function () { done(null); });
     } catch (e) {
       done(null);
     }
@@ -236,7 +243,7 @@ var TV = (function () {
       } catch (e) {
         show(false);
       }
-    });
+    }, true);
   }
 
   function samsungInputs(done) {

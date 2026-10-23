@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Translation catalogues for the Android app (app/assets/i18n/<lang>.json).
+"""Translation catalogues for the Android app and the LG/Samsung web app (app/assets/i18n/<lang>.json).
 
     python3 tools/translate.py                 # extract en.json from the code, report what each language lacks
     python3 tools/translate.py --fill          # also translate the missing strings (needs ANTHROPIC_API_KEY)
@@ -9,7 +9,8 @@
     python3 tools/translate.py --new fr        # start a catalogue for a new language (then --fill --lang fr)
 
 The English text in the code is the source: every Ui.tr("...") / Ui.trf("...", ...) / Ui.plural("...", n) call (the
-first argument), plus Ui.datePattern("format|..."). en.json maps each key to its English
+first argument), plus Ui.datePattern("format|..."), and in web/ the same calls without "Ui." (tr, trf, plural and
+formatDate; tools/webapp.py packs the keys the web app uses into its i18n.js). en.json maps each key to its English
 text: a key "context|Text" is "Text" in a given context (a word that needs another translation there), and "{name}"
 is a placeholder filled at runtime. A key "plural|one:{n} season|other:{n} seasons" (Ui.plural) is a count: each language
 gives one form per plural category it uses (CLDR: zero, one, two, few, many, other). Each <lang>.json maps the same keys
@@ -31,10 +32,12 @@ import urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SRC = os.path.join(ROOT, "app", "src")
+WEB = os.path.join(ROOT, "web")
 I18N = os.path.join(ROOT, "app", "assets", "i18n")
 CACHE = os.path.join(ROOT, "tools", ".i18n-cache.json")   # translations made with --fill, by hash (not committed)
 DEFAULT_MODEL = "claude-haiku-5-5"
 CALL = re.compile(r"\bUi\.(trf?|plural|datePattern)\(")
+WEB_CALL = re.compile(r"(?:(?<![\w.$])|(?<=\bI18N\.))(trf?|plural|formatDate)\(")
 PLURAL_FORM = re.compile(r"^(zero|one|two|few|many|other):")
 PLACEHOLDER = re.compile(r"\{[a-zA-Z_][a-zA-Z_0-9]*\}")
 
@@ -78,16 +81,17 @@ def java_args(text, start):
 
 
 LITERAL = re.compile(r'"((?:[^"\\]|\\.)*)"')
+JS_LITERAL = re.compile(r'"((?:[^"\\]|\\.)*)"|\'((?:[^\'\\]|\\.)*)\'')
 
 
-def java_string(arg):
+def java_string(arg, literal=LITERAL):
     """The value of an argument made only of string literals joined with +, else None."""
     rest, out = arg.strip(), []
     while rest:
-        m = LITERAL.match(rest)
+        m = literal.match(rest)
         if not m:
             return None
-        out.append(m.group(1))
+        out.append(next(g for g in m.groups() if g is not None))
         rest = rest[m.end():].strip()
         if rest.startswith("+"):
             rest = rest[1:].strip()
@@ -100,6 +104,11 @@ def java_string(arg):
 
 def calls():
     """Every translatable call in the code: yields (file, line, kind, [argument values or None])."""
+    yield from java_calls()
+    yield from web_calls()
+
+
+def java_calls():
     for dirpath, _, files in os.walk(SRC):
         for name in sorted(files):
             if not name.endswith(".java"):
@@ -115,6 +124,32 @@ def calls():
                 yield os.path.relpath(path, ROOT), line, m.group(1), [java_string(a) for a in args]
 
 
+def web_calls():
+    for name in sorted(os.listdir(WEB)):
+        if not name.endswith(".js") or name == "strings.js":   # strings.js is where the calls are made, not used
+            continue
+        path = os.path.join(WEB, name)
+        text = open(path, encoding="utf-8").read()
+        for m in WEB_CALL.finditer(text):
+            line = text.count("\n", 0, m.start()) + 1
+            prefix = text[text.rfind("\n", 0, m.start()) + 1:m.start()].lstrip()
+            if prefix.startswith(("*", "//", "/*")) or prefix.endswith("function "):
+                continue
+            args, _ = java_args(text, m.end())
+            yield os.path.relpath(path, ROOT), line, m.group(1), [java_string(a, JS_LITERAL) for a in args]
+
+
+def web_keys():
+    """The keys the web app uses, with the plain text of each "context|Text" one (its fallback)."""
+    keys = set()
+    for _, _, _, args in web_calls():
+        if args and args[0] is not None:
+            keys.add(args[0])
+            if "|" in args[0]:
+                keys.add(english_of(args[0]))
+    return keys
+
+
 def english_of(key):
     return key.split("|", 1)[1] if "|" in key else key
 
@@ -125,7 +160,7 @@ def extract():
     for path, line, kind, args in calls():
         key = args[0]
         if key is None:
-            print(f"warning: {path}:{line}: Ui.{kind} with text that isn't a string literal", file=sys.stderr)
+            print(f"warning: {path}:{line}: {kind} with text that isn't a string literal", file=sys.stderr)
             continue
         keys[key] = english_of(key)
     return dict(sorted(keys.items()))

@@ -2,10 +2,13 @@ package io.freemytv;
 
 import android.content.Context;
 import android.content.res.AssetManager;
+import android.graphics.Bitmap;
+import android.graphics.BitmapShader;
 import android.graphics.Canvas;
 import android.graphics.Paint;
 import android.graphics.Rect;
 import android.graphics.RectF;
+import android.graphics.Shader;
 import android.graphics.Typeface;
 import android.icu.text.PluralRules;
 import android.os.Build;
@@ -104,7 +107,7 @@ final class Ui {
     private static final String[][] REGIONS = {
         {"pt", "BR"}, {"es", "ES"}, {"de", "DE"}, {"fr", "FR"}, {"it", "IT"}, {"nl", "NL"}, {"pl", "PL"}, {"sv", "SE"},
         {"da", "DK"}, {"nb", "NO"}, {"fi", "FI"}, {"cs", "CZ"}, {"ro", "RO"}, {"tr", "TR"}, {"ru", "RU"}, {"uk", "UA"},
-        {"el", "GR"}, {"ja", "JP"}, {"ko", "KR"}, {"hi", "IN"}, {"id", "ID"}, {"vi", "VN"},
+        {"el", "GR"}, {"ja", "JP"}, {"ko", "KR"}, {"hi", "IN"}, {"id", "ID"}, {"vi", "VN"}, {"th", "TH"},
     };
 
     /** The text for this English key in the current language (the English itself when there is none). */
@@ -341,6 +344,27 @@ final class Ui {
 
     static float clamp(float v) {
         return Math.max(0, Math.min(1, v));
+    }
+
+    static final int[] BAYER = {0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5};
+
+    static Shader gradient(int height, int top, int bottom) {
+        int n = Math.max(2, height);
+        int[] px = new int[4 * n];
+        for (int y = 0; y < n; y++) {
+            float t = y / (float) (n - 1);
+            for (int x = 0; x < 4; x++) {
+                float d = (BAYER[(y & 3) * 4 + x] + 0.5f) / 16f;
+                int c = 0;
+                for (int s = 0; s < 32; s += 8) {
+                    float a = (top >>> s) & 255, b = (bottom >>> s) & 255;
+                    c |= Math.min(255, (int) (a + (b - a) * t + d)) << s;
+                }
+                px[y * 4 + x] = c;
+            }
+        }
+        Bitmap b = Bitmap.createBitmap(px, 4, n, Bitmap.Config.ARGB_8888);
+        return new BitmapShader(b, Shader.TileMode.REPEAT, Shader.TileMode.CLAMP);
     }
 
     private static final Map<String, DatePattern> DATE_PATTERNS = new HashMap<>();

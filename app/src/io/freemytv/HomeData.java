@@ -63,17 +63,21 @@ final class HomeData {
 
     private static volatile int[] activeCoins;
     private static volatile int activeVersion = -1;
+    private static volatile boolean activeInDollars;
 
     /** Indexes in COINS of the coins the user has on (and that Binance lists in this currency). */
     static int[] active() {
         int[] a = activeCoins;
-        if (a != null && activeVersion == Prefs.version) return a;
+        boolean dollars = inDollars;
+        if (a != null && activeVersion == Prefs.version && activeInDollars == dollars) return a;
         int n = 0;
         int[] tmp = new int[COINS.length];
-        for (int i = 0; i < COINS.length; i++) if (Prefs.coin(i) && (i < 3 || CURRENCY.equals("BRL"))) tmp[n++] = i;
+        // The dollar only in reais, not in dollars: USDTUSDT isn't a pair, and Binance would refuse the whole request.
+        for (int i = 0; i < COINS.length; i++) if (Prefs.coin(i) && (i < 3 || CURRENCY.equals("BRL") && !dollars)) tmp[n++] = i;
         a = java.util.Arrays.copyOf(tmp, n);
         activeCoins = a;
         activeVersion = Prefs.version;
+        activeInDollars = dollars;
         return a;
     }
 
@@ -105,7 +109,9 @@ final class HomeData {
             try {
                 return get(host + pricesPath());
             } catch (IOException e) {
-                failed = e;
+                // Binance.US has only dollar pairs: its error counts only where Binance.com refuses the US (HTTP 451).
+                // After a timeout or a 5xx there, its HTTP 400 would put the prices in dollars for good.
+                if (failed == null || "HTTP 451".equals(failed.getMessage())) failed = e;
                 // A pair Binance doesn't list (HTTP 400) isn't a refusal: the caller falls back to dollars instead.
                 if ("HTTP 400".equals(e.getMessage())) break;
             }

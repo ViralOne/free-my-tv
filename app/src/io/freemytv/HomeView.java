@@ -4,6 +4,8 @@ import android.accessibilityservice.AccessibilityServiceInfo;
 import android.app.Activity;
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.content.pm.LauncherApps;
+import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.graphics.BitmapShader;
 import android.graphics.BlurMaskFilter;
@@ -19,6 +21,7 @@ import android.media.tv.TvInputManager;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
+import android.os.UserHandle;
 import android.text.Layout;
 import android.text.StaticLayout;
 import android.text.TextPaint;
@@ -131,6 +134,8 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         @Override public void focus(int id) { a11yFocus(id); }
         @Override public void click(int id) { activate(); }
         @Override public boolean clickable(int id) { return (id - 1) / 1000 != WIDGETS; }
+        @Override public boolean holdable(int id) { return (id - 1) / 1000 == GRID && canToggleShelf((id - 1) % 1000); }
+        @Override public void hold(int id) { a11yHold(); }
     });
     private final RectF a11yRect = new RectF();
     private final Layer sky, heroLayer, rowsLayer, status, platter, tiles, drawerLayer, sheetLayer, toastLayer;
@@ -152,8 +157,9 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private int tab, topIndex, cardIndex;
     private int widgetIndex;    // with TalkBack on, the drawer's weather (0) or quotes (1) card can take the focus
     private List<Recs.Pick> cards = new ArrayList<>();
-    private final Spring[] topFocus = new Spring[TAB_COUNT + 3];
-    private final RectF[] topRects = new RectF[TAB_COUNT + 3];
+    // The tabs, then the round buttons at the top right (up to HomeApps.MAX_TOP).
+    private final Spring[] topFocus = new Spring[TAB_COUNT + HomeApps.MAX_TOP];
+    private final RectF[] topRects = new RectF[TAB_COUNT + HomeApps.MAX_TOP];
     private final Spring[] cardFocus = new Spring[MAX_CARDS];
     private final RectF[] cardRects = new RectF[MAX_CARDS], cardBase = new RectF[MAX_CARDS];
     private final Spring cardScroll = new Spring(0.4f, 1f, 0);
@@ -228,7 +234,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private Spring[] tileSlide = new Spring[0];
     private final Spring moveLift = new Spring(0.3f, 0.72f, 0);
     private List<HomeApps.Item> reorderOrigin;
-    private final Runnable holdStart = () -> { if (this.okDown && this.holdArmed) startReorder(); };
+    private final Runnable holdStart = () -> { if (this.okDown && this.holdArmed) hold(); };
 
     // Corner capsule
     private List<HomeApps.Item> statusItems = new ArrayList<>();
@@ -265,8 +271,9 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private final Spring sheet = new Spring(0.38f, 0.9f, 0);
     private final Spring scroll = new Spring(0.34f, 1f, 0);
     private final RectF focusedCell = new RectF();
-    private boolean sheetOpen;
+    private boolean sheetOpen, shelfEdited;
     private int gridIndex;
+    private long toggledAt;
 
     // Toasts
     private final ArrayDeque<String> toasts = new ArrayDeque<>();
@@ -277,6 +284,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private boolean running, tilesDirty, statusDirty, heroDirty, drawerDirty, gridDirty, motionDirty = true;
     private boolean drawerWasMoving, idle;
     private long lastNanos, resumedAt, lastStep;
+    private static final long BURST_MS = 1500;
     private int w, h;
     private float k = 1;
     private String clockText = "", dateText = "", weatherLine = "";
@@ -354,6 +362,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             // drawer and the top buttons are always drawn as if resting in place (they are only visible there and are
             // not redrawn while they move).
             scene.setOffset(0, kind == DRAWER || kind == STATUS ? 0 : getTranslationY());
+            shadows.dither = dark() > 0.5f;
             switch (kind) {
                 case SKY: drawSky(c); break;
                 case HERO: drawLightTop(c); break;
@@ -370,6 +379,11 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     }
 
     private final Runnable reloadSoon = this::reload;
+    private static final long APPS_MAX_AGE_MS = 15 * 60_000;
+    private final LauncherApps launcherApps;
+    private boolean appsStale = true;
+    private int appsVersion, appsGeneration;
+    private long appsAt;
 
     private final TvInputManager.TvInputCallback inputCallback = new TvInputManager.TvInputCallback() {
         @Override public void onInputStateChanged(String inputId, int state) { reloadSoon(); }
@@ -404,6 +418,8 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         click = new Click(a);
         ui = a.getSharedPreferences("home-ui", Context.MODE_PRIVATE);
         tvInputs = (TvInputManager) a.getSystemService(Context.TV_INPUT_SERVICE);
+        launcherApps = (LauncherApps) a.getSystemService(Context.LAUNCHER_APPS_SERVICE);
+        if (launcherApps != null) launcherApps.registerCallback(packages, handler);
         setFocusable(true);
         sky = new Layer(a, SKY);
         heroLayer = new Layer(a, HERO);
@@ -435,7 +451,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             cardBase[i] = new RectF();
         }
         for (int i = 0; i < MAX_ROWS; i++) rowSlots[i] = new Row();
-        makeLightButtons();
+        setLightButtons(HomeApps.topButtons());
         tab = defaultTab();
         recs.setLight(true);
         checkNight(false);
@@ -454,7 +470,11 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         if (running) return;
         running = true;
         checkNight(false);
-        resumedAt = SystemClock.uptimeMillis();
+        long now = SystemClock.uptimeMillis();
+        // Some remotes (Xiaomi's) send one Home press as a burst of 5 to 8, and each one pauses and resumes the home
+        // screen: those after the first change nothing, so the lists are read only once.
+        boolean again = resumedAt != 0 && now - resumedAt < BURST_MS;
+        resumedAt = now;
         lastNanos = 0;
         lastStep = 0;
         data.addListener(this);
@@ -464,7 +484,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         if (tvInputs != null) tvInputs.registerCallback(inputCallback, handler);
         handler.postDelayed(tick, 15_000);
         checkNotices();
-        reload();
+        if (!again) reload();
         updatePalette();
         updatePicks();
         if (sheetOpen) closeSheet();
@@ -492,6 +512,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
 
     void destroy() {
         pause();
+        if (launcherApps != null) launcherApps.unregisterCallback(packages);
         click.release();
     }
 
@@ -520,12 +541,18 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         motionDirty = true;
     }
 
-    /** The three corner buttons, with their names in the current language. */
-    private void makeLightButtons() {
+    /** The round buttons at the top right (Settings > Top Buttons), with their names in the current language. */
+    private void setLightButtons(List<HomeApps.Item> list) {
         lightButtons.clear();
-        lightButtons.add(HomeApps.action(HomeApps.LIVE_TV, "live", Ui.tr("light|Live TV"), "live_tv"));
-        lightButtons.add(HomeApps.action(HomeApps.INPUTS, "inputs", Ui.tr("HDMI Inputs"), "hdmi"));
-        lightButtons.add(HomeApps.action(HomeApps.SETTINGS, "settings", Ui.tr("light|Settings"), "settings"));
+        lightButtons.addAll(list);
+        if (zone == Z_TOP && topIndex >= TAB_COUNT + lightButtons.size()) {
+            topIndex = TAB_COUNT - 1 + lightButtons.size();
+            if (topIndex < TAB_COUNT && !tabsOn()) zone = Z_SHELF;   // without tabs they can't hold focus
+            else if (topIndex < TAB_COUNT) selectTab(topIndex);
+            retarget(true);
+        }
+        layoutLight();
+        statusDirty = true;
     }
 
     /** The tab names, made again only when the language changes (they are drawn on every frame). */
@@ -1310,15 +1337,16 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         Paint text = clock ? lClockQuote : lQuote;
         // The corner buttons' names appear in this row: the quotes fade out while one of them has focus.
         float fade = 1;
-        for (int i = TAB_COUNT; i < TAB_COUNT + 3 && !clock; i++) fade = Math.min(fade, 1 - Ui.clamp(topFocus[i].value));
+        for (int i = TAB_COUNT; i < TAB_COUNT + lightButtons.size() && !clock; i++) fade = Math.min(fade, 1 - Ui.clamp(topFocus[i].value));
         if (fade <= 0.01f) return;
         int textColor = text.getColor();
         text.setColor(Ui.alpha(textColor, fade));
-        int n = HomeData.coinCount();
+        // One read of the list, so n always matches the coins drawn below.
+        int[] coins = HomeData.active();
+        int n = coins.length;
         if (n == 0) { text.setColor(textColor); return; }
         // Measured once per set of prices: this row is redrawn on every frame of the cards' focus animation, and
         // measuring text there cost ~3 ms a frame on a Mi Box 3.
-        int[] coins = HomeData.active();
         Quotes q = quotes;
         if (q == null || !q.matches(coins, data.prices, text.getTextSize())) {
             q = quotes = new Quotes(coins, data.prices, text);
@@ -1881,6 +1909,10 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         sheetOpen = false;
         sheet.target = 0;
         retarget(false);
+        if (shelfEdited) {     // the grid was kept as it was while open: apps that went to the shelf leave it now
+            shelfEdited = false;
+            reload();
+        }
     }
 
     private void retargetGrid(boolean snap) {
@@ -2061,18 +2093,45 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
 
     private void reload() {
         final Context c = getContext().getApplicationContext();
+        // The shelf and All Apps (100 to 500 ms of package queries on a TV) only when they can have changed.
+        long up = SystemClock.uptimeMillis();
+        final boolean apps = appsStale || Prefs.version != appsVersion || Ui.generation != appsGeneration
+                || up - appsAt > APPS_MAX_AGE_MS;
+        if (apps) {
+            appsStale = false;
+            appsVersion = Prefs.version;
+            appsGeneration = Ui.generation;
+            appsAt = up;
+        }
         LOADER.execute(() -> {
-            final List<HomeApps.Item> s = HomeApps.shelf(c, true);
+            final List<HomeApps.Item> s = apps ? HomeApps.shelf(c, true) : null;
             final List<HomeApps.Item> st = statusList(c);
             final List<HomeApps.Item> d = drawerList(c);
-            final List<HomeApps.Item> o = HomeApps.others(c);
+            final List<HomeApps.Item> o = apps ? HomeApps.others(c) : null;
+            final List<HomeApps.Item> top = apps ? HomeApps.topButtons() : null;   // they change with Prefs too
             handler.post(() -> {
-                setShelf(s);
+                if (top != null) setLightButtons(top);
+                if (s != null) setShelf(s);
                 setStatusItems(st);
                 setDrawerItems(d);
-                if (!sheetOpen) setOthers(o);
+                if (o != null && !sheetOpen) setOthers(o);
+                else if (o != null) appsStale = true;   // All Apps is open: its list comes next time
             });
         });
+    }
+
+    /** Apps installed, removed or updated (also while another app is open): the next reload reads them again. */
+    private final LauncherApps.Callback packages = new LauncherApps.Callback() {
+        @Override public void onPackageAdded(String pkg, UserHandle user) { appsChanged(); }
+        @Override public void onPackageRemoved(String pkg, UserHandle user) { appsChanged(); }
+        @Override public void onPackageChanged(String pkg, UserHandle user) { appsChanged(); }
+        @Override public void onPackagesAvailable(String[] pkgs, UserHandle user, boolean replacing) { appsChanged(); }
+        @Override public void onPackagesUnavailable(String[] pkgs, UserHandle user, boolean replacing) { appsChanged(); }
+    };
+
+    private void appsChanged() {
+        appsStale = true;
+        if (running) reloadSoon();
     }
 
     // MARK: - Keys: only the arrows, OK and Back (system keys pass through to the system)
@@ -2105,17 +2164,18 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             case KeyEvent.KEYCODE_NUMPAD_ENTER:
                 // Opens on release, and only if the press happened here: the release of an OK pressed inside another
                 // app opens nothing.
-                // Held on a shelf app (~0.5 s): move mode. A timer, since not every remote repeats a held key, or the
-                // long-press repeat, whichever comes first; the release after a hold opens nothing.
+                // Held (~0.5 s) on a shelf app: move mode; on an app in All Apps: on or off the shelf. A timer, since
+                // not every remote repeats a held key, or the long-press repeat, whichever comes first; the release
+                // after a hold opens nothing.
                 if (down) {
                     if (e.getRepeatCount() == 0) {
                         okDown = true;
                         okHeld = false;
                         handler.removeCallbacks(holdStart);
-                        holdArmed = canReorder();
+                        holdArmed = sheetOpen ? canToggleShelf(gridIndex) : canReorder();
                         if (holdArmed) handler.postDelayed(holdStart, HOLD_MS);
                     } else if (okDown && holdArmed && e.isLongPress()) {
-                        startReorder();
+                        hold();
                     }
                 } else {
                     holdArmed = false;
@@ -2340,6 +2400,68 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         boolean opened = HomeApps.open(activity, it, this, Math.round(r.left), Math.round(r.top),
                 Math.round(r.width()), Math.round(r.height()));
         if (!opened) showToast(Ui.trf("Couldn't open {app}.", "app", it.label));
+    }
+
+    // MARK: - Holding OK: All Apps puts the app on the shelf or takes it off; on the shelf, the app is lifted to move
+
+    private void hold() {
+        if (sheetOpen) toggleShelf(); else startReorder();
+    }
+
+    /** TalkBack's long click on an app in All Apps (once per press, if the remote's hold also arrives). */
+    private void a11yHold() {
+        if (SystemClock.uptimeMillis() - toggledAt < 1000) return;
+        if (okDown) okHeld = true;     // the remote's release must not open the app
+        toggleShelf();
+    }
+
+    private boolean canToggleShelf(int i) {
+        if (!sheetOpen || i >= others.size()) return false;
+        HomeApps.Item it = others.get(i);
+        return it.kind == HomeApps.APP && it.pkg != null;
+    }
+
+    /** Puts the focused app at the end of the shelf, or takes it off if it's there; a toast says which. */
+    private void toggleShelf() {
+        handler.removeCallbacks(holdStart);
+        holdArmed = false;
+        if (!canToggleShelf(gridIndex)) return;
+        okHeld = true;
+        toggledAt = SystemClock.uptimeMillis();
+        final HomeApps.Item it = others.get(gridIndex);
+        final Context c = getContext().getApplicationContext();
+        click.open();
+        LOADER.execute(() -> {
+            // On the shelf means shown there: installed and within the limit, as in Settings > Shelf.
+            List<String> list = new ArrayList<>(HomeApps.shelfPackages(c));
+            PackageManager pm = c.getPackageManager();
+            int shown = 0;
+            boolean on = false;
+            for (String p : list) {
+                if (shown >= HomeApps.MAX_SHELF) break;
+                if (HomeApps.launchIntent(pm, p) == null) continue;
+                shown++;
+                on |= p.equals(it.pkg);
+            }
+            final String text;
+            list.remove(it.pkg);
+            if (on) {
+                text = Ui.trf("Removed from the shelf: {app}", "app", it.label);
+            } else {
+                if (shown >= HomeApps.MAX_SHELF) {
+                    handler.post(() -> showToast(Ui.tr("The shelf is full. Make room in Free My TV › Shelf.")));
+                    return;
+                }
+                list.add(it.pkg);
+                text = Ui.trf("Added to the shelf: {app}", "app", it.label);
+            }
+            Prefs.setShelf(list);   // here, so the next hold reads the new list
+            handler.post(() -> {
+                shelfEdited = true;
+                showToast(text);
+                reload();
+            });
+        });
     }
 
     // MARK: - Moving apps on the shelf
@@ -2846,7 +2968,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             x = topRects[i].right + 4 * k;
         }
         float b = L_BUTTON * k, right = CONTENT_R * k, cy = L_BUTTON_CY * k;
-        for (int i = 2; i >= 0; i--) {
+        for (int i = lightButtons.size() - 1; i >= 0; i--) {
             topRects[TAB_COUNT + i].set(right - b, cy - b / 2, right, cy + b / 2);
             right -= b + L_BUTTON_GAP * k;
         }
@@ -3212,8 +3334,8 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         // Drawer open: the background lightens (by day) or darkens (at night), as a filter on the drawing itself.
         android.graphics.ColorFilter v = veil(tone(0.32f, 0.42f) * Ui.clamp(drawer.value), blend(0xFFFFFFFF, 0xFF000000, night));
         if (bgTo == null || (fading && bgFrom == null)) {
-            if (lightGradient == null) lightGradient = new LinearGradient(0, 0, 0, h, 0xFFF5F5F7, 0xFFE2E2E7, Shader.TileMode.CLAMP);
-            if (nightGradient == null) nightGradient = new LinearGradient(0, 0, 0, h, 0xFF1C1C1E, 0xFF0B0B0D, Shader.TileMode.CLAMP);
+            if (lightGradient == null) lightGradient = Ui.gradient(h, 0xFFF5F5F7, 0xFFE2E2E7);
+            if (nightGradient == null) nightGradient = Ui.gradient(h, 0xFF1C1C1E, 0xFF0B0B0D);
             fill.setColorFilter(v);
             fill.setColor(0xFF000000);
             if (night < 0.999f) {
@@ -3389,12 +3511,13 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     }
 
     /**
-     * Live TV, HDMI Inputs and Settings: icon-only glass circles (light by day, smoked at night); the focused one turns
-     * white with a dark icon (the tvOS focus) and its name appears below it.
+     * The round buttons (Live TV, HDMI Inputs and Settings by default): icon-only glass circles (light by day, smoked at
+     * night); the focused one turns white with a dark icon (the tvOS focus) and its name appears below it.
      */
     private void drawLightButtons(Canvas c) {
         applyTone();
-        for (int i = 0; i < 3; i++) {
+        for (int i = 0; i < lightButtons.size(); i++) {
+            HomeApps.Item it = lightButtons.get(i);
             RectF r = topRects[TAB_COUNT + i];
             float f = Ui.clamp(topFocus[TAB_COUNT + i].value), s = 1 + 0.1f * f, rad = r.width() / 2 * s;
             cell.set(r.centerX() - rad, r.centerY() - rad, r.centerX() + rad, r.centerY() + rad);
@@ -3409,10 +3532,10 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
                 fill.setColor(Ui.alpha(0xFFFFFFFF, f));
                 c.drawCircle(cell.centerX(), cell.centerY(), rad, fill);
             }
-            Symbols.draw(getContext(), c, lightButtons.get(i).symbol, cell.centerX(), cell.centerY(), 27 * k * s,
+            Symbols.draw(getContext(), c, it.symbol, cell.centerX(), cell.centerY(), 27 * k * s,
                     blend(tone(L_INK, 0xEBFFFFFF), L_INK, f));
             if (f > 0.01f) {
-                String label = lightButtons.get(i).label;
+                String label = it.label;
                 float half = lTip.measureText(label) / 2;
                 float x = Math.min(r.centerX(), CONTENT_R * k - half);
                 lTip.setAlpha(Math.round(255 * f));
@@ -3434,6 +3557,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
                 // Up from an empty shelf too: move()'s older zones (the hero, the corner capsule) aren't drawn any more.
                 if (dy >= 0) return false;
                 if (cards.isEmpty()) {
+                    if (!tabsOn() && lightButtons.isEmpty()) return true;   // no tabs and no buttons above
                     zone = Z_TOP;
                     topIndex = tabsOn() ? tab : TAB_COUNT;
                 } else {
@@ -3482,7 +3606,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             }
             case Z_TOP:
                 if (dx != 0) {
-                    int next = Math.max(tabsOn() ? 0 : TAB_COUNT, Math.min(TAB_COUNT + 2, topIndex + dx));
+                    int next = Math.max(tabsOn() ? 0 : TAB_COUNT, Math.min(TAB_COUNT - 1 + lightButtons.size(), topIndex + dx));
                     if (next == topIndex) return true;
                     topIndex = next;
                     if (topIndex < TAB_COUNT) selectTab(topIndex);   // like Apple TV tabs: focusing a tab selects it
@@ -3493,6 +3617,8 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
                         zone = Z_CARDS;
                         cardIndex = nearest(cardRects, cards.size(), topRects[topIndex].centerX());
                     }
+                } else if (topIndex < TAB_COUNT && !lightButtons.isEmpty()) {
+                    topIndex = TAB_COUNT;   // up from the tabs reaches the corner buttons without walking the row
                 } else {
                     return true;
                 }

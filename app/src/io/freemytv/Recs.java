@@ -126,7 +126,10 @@ final class Recs {
         SERVICE_NAME.put("oneplay", "Oneplay");
     }
     /** Country for "what streams where" (config.properties "tmdb_region", e.g. US, GB, BR). */
-    private static final String REGION = Config.TMDB_REGION.trim().toUpperCase(Locale.ROOT);
+    static final String REGION = Config.TMDB_REGION.trim().toUpperCase(Locale.ROOT);
+    /** The errors the settings say in words: TMDB lists none of the TV's apps in REGION, or the TV has none we know. */
+    static final String NO_APPS = "none of the TV's streaming services are on TMDB";
+    static final String NO_KNOWN_APPS = "none of the TV's streaming apps can give picks";
 
     private static Recs instance;
 
@@ -782,6 +785,10 @@ final class Recs {
     // MARK: - TMDB
 
     private void fetchList(int p) throws Exception {
+        // None of the services we know is on the TV (or hide_services hides them all): no region would change that.
+        boolean any = false;
+        for (String[] s : SERVICES) any |= installed(s[2]);
+        if (!any) throw new IOException(NO_KNOWN_APPS);
         // The services the TV has, by their TMDB ids in your region.
         Map<Integer, String[]> services = new HashMap<>();
         JSONArray providers = get("/watch/providers/movie?language=" + lang() + "&watch_region=" + REGION).getJSONArray("results");
@@ -790,7 +797,7 @@ final class Recs {
             String[] s = service(o.optString("provider_name"));
             if (s != null && installed(s[2])) services.put(o.getInt("provider_id"), s);
         }
-        if (services.isEmpty()) throw new IOException("none of the TV's streaming services are on TMDB");
+        if (services.isEmpty()) throw new IOException(NO_APPS);
         StringBuilder ids = new StringBuilder();
         for (int id : services.keySet()) ids.append(ids.length() == 0 ? "" : "|").append(id);
         String common = "&language=" + lang() + "&watch_region=" + REGION + "&with_watch_monetization_types=flatrate&include_adult=false"

@@ -95,6 +95,7 @@ final class HomeMode {
         "com.tcl.system.server", "com.tcl.tcl_bt_rcu_service", "com.tcl.micmanager", "com.tcl.keyhelp",
         "com.tcl.settings", "com.tcl.common.shortcutmenu", "com.tcl.inputmethod.international", "com.tcl.android.webview",
         "com.tcl.wifi.resources.overlay", "com.tcl.partnercustomizer", "com.tcl.tv.tclhome_passive",
+        "com.tcl.keycustomfunctionservice",                                           // remote keys; a fallback home too
         "com.google.android.gms", "com.google.android.gsf", "com.android.vending", "com.google.android.apps.mediashell",
         "com.google.android.tv.remote.service", "com.google.android.inputmethod.latin", "com.google.android.webview",
         "com.android.tv.settings", "com.android.systemui", "android", PKG,
@@ -136,6 +137,43 @@ final class HomeMode {
         "com.fengmi.testsuite", "android.autoinstalls.config.fomovie",
         "uk.co.freeview.tifbridge",
         "uk.co.freeview.mdsclient", "uk.co.freeview.fvpconfigauth"));
+
+    /**
+     * Android's own pieces: with one of them off, a TV may not start again (a list that took the permission
+     * controller and the package installer left an Android TV stick dead, CleanYourTV #884).
+     */
+    private static final Pattern CORE = Pattern.compile("android|com\\.android\\.(systemui|shell|phone|settings|tv\\.settings)"
+            + "|com\\.(google\\.)?android\\.(permissioncontroller|packageinstaller|ext\\.services|ext\\.shared|modulemetadata)"
+            + "|com\\.google\\.android\\.overlay\\.modules.*|com\\.android\\.providers\\..*");
+    /** Factory and service menus, on any brand ("com.tcl.factory.view", "com.cvte.tv.fac.aging", "mediatek.factorymenu.ui"). */
+    private static final Pattern FACTORY = Pattern.compile("(.*\\.)?(factory|factorymenu|facmenu|fac|hkcfac|testpq)(\\..*)?");
+
+    /** Checked before every disable: never the protected list, Android's own pieces or a factory menu. */
+    private static boolean mayTurnOff(String pkg) {
+        return !PROTECTED.contains(pkg) && !CORE.matcher(pkg).matches() && !FACTORY.matcher(pkg).matches();
+    }
+
+    /**
+     * Of these, the ones the TV still needs, whatever they look like: the software under its inputs (they ask for
+     * TV_INPUT_HARDWARE; off, HDMI shows "No signal" and only a full restore brought it back, CleanYourTV #321), and
+     * the receiver of the remote's Input key and Bluetooth pairing (fusion.android.tv.demo on several MediaTek boards).
+     * null when the check didn't finish: then none of them goes off this time.
+     */
+    private static Set<String> neededByTv(Adb adb, Set<String> pkgs) throws IOException {
+        Set<String> keep = new HashSet<>();
+        if (pkgs.isEmpty()) return keep;
+        // Only the package's own requested permissions: a shared user's would match by mistake. A line per package keeps
+        // the connection's read timeout from running out on a slow TV.
+        String out = adb.shell("for p in " + String.join(" ", sorted(pkgs)) + "; do d=\"$(dumpsys package $p)\"; "
+                + "if printf '%s\\n' \"$d\" | sed -n -r '/requested permissions:/,/(install|runtime) permissions:|User [0-9]+:/p'"
+                + " | grep -q TV_INPUT_HARDWARE || printf '%s\\n' \"$d\" | grep -q -E 'TV_INPUT_BUTTON|CONNECT_INPUT|AddAccessory';"
+                + " then echo \"keep $p\"; else echo \"- $p\"; fi; done; echo checked");
+        if (!out.contains("checked")) return null;
+        Matcher m = Pattern.compile("keep ([\\w.]+)").matcher(out);
+        while (m.find()) keep.add(m.group(1));
+        if (!keep.isEmpty()) AppLog.w("kept on, the TV's inputs or remote need them: " + String.join(", ", sorted(keep)));
+        return keep;
+    }
 
     /** One switch at a time (jobs can overlap: a boot check and a button press). */
     private static final Object RUN = new Object();
@@ -225,6 +263,12 @@ final class HomeMode {
 
     private static void applyFree(Context c) {
         JSONObject s = state(c);
+        // Kalley 43G200 turns Google TV's setup app back on at every start: without its home screen the next start
+        // looped at the logo, and that TV only came back with a USB reflash (CleanYourTV, examples/kalley-43g200).
+        if ("R3_GTV".equals(Build.DEVICE)) {
+            done(c, Ui.tr("On this TV model, switching the home screen kept a TV from starting. Free My TV stays an app here: open it from your apps."));
+            return;
+        }
         try (Adb adb = connect(c, s)) {
             // The TV's own home screen and screensaver, recorded once (before ours replace them) so "original" restores
             // exactly what was there, on any brand.
@@ -244,6 +288,13 @@ final class HomeMode {
             // Turning off an app makes Android delete the Wi-Fi networks it saved (#14), and Original can't bring them
             // back. The TV's first setup usually saved the network: then stop here, before anything changes.
             Set<String> owners = wifiOwners(adb);
+            if (owners == null) {
+                // Nobody can tell who saved the networks: on Wi-Fi, stop before anything changes.
+                if (!"0".equals(adb.shell("settings get global wifi_on").trim())) {
+                    throw new IOException(Ui.tr("I couldn't check which app saved the Wi-Fi, so nothing changed. Try again in a minute."));
+                }
+                owners = new HashSet<>();
+            }
             boolean setupHome = setupIsHome(adb);
             if ((setupHome && owners.contains(GOOGLE_SETUP)) || owners.contains(packageOf(home))) {
                 throw new IOException(Ui.tr("the TV's first setup saved the Wi-Fi, and turning it off would erase those networks. "
@@ -277,13 +328,28 @@ final class HomeMode {
             JSONObject before = state(c);
             before.put("keptOff", new JSONArray(sorted(keptOff)));
             save(c, before);
+            Set<String> candidates = new HashSet<>();
+            for (String pkg : targets) if (present.contains(pkg) && mayTurnOff(pkg)) candidates.add(pkg);
+            Set<String> needed = neededByTv(adb, candidates);
+            if (needed == null) {
+                AppLog.w("couldn't check what the TV's inputs need: nothing goes off this time");
+                needed = candidates;
+            }
+            String homePkg = packageOf(home);
+            boolean setupOn = setupHome && present.contains(GOOGLE_SETUP) && !keptOff.contains(GOOGLE_SETUP);
             int done = 0;
             for (String pkg : targets) {
                 done++;
                 busy(c, Ui.trf("Turning off apps ({done}/{total})…", "done", done, "total", targets.size()));
-                if (PROTECTED.contains(pkg) || !present.contains(pkg) || owners.contains(pkg) || keptOff.contains(pkg)) continue;
+                if (!candidates.contains(pkg) || needed.contains(pkg) || owners.contains(pkg) || keptOff.contains(pkg)) continue;
+                // The TV's home screen only once Google TV's setup app is off: its recovery screen would take Home.
+                if (pkg.equals(homePkg) && setupOn) {
+                    AppLog.w("kept the TV's home screen on: Google TV's setup app is still on");
+                    continue;
+                }
                 String out = adb.shell("pm disable-user --user 0 " + pkg);
                 if (out.contains("disabled-user")) {
+                    if (pkg.equals(GOOGLE_SETUP)) setupOn = false;
                     disabled.add(pkg);
                     JSONObject now = state(c);
                     now.put("disabled", new JSONArray(sorted(disabled)));
@@ -326,19 +392,32 @@ final class HomeMode {
             }
             toEnable.removeAll(stringList(s, "keptOff"));
             Set<String> present = packages(adb, "");
+            // The TV's home screen first and Google TV's setup app last, after the home screen is back: alone, its
+            // recovery screen would take the Home button.
+            boolean setupBack = toEnable.remove(GOOGLE_SETUP) && packages(adb, "-d").contains(GOOGLE_SETUP);
+            List<String> order = sorted(toEnable);
+            String homePkg = packageOf(home);
+            if (order.remove(homePkg)) order.add(0, homePkg);
             int done = 0;
             List<String> failed = new ArrayList<>();
-            for (String pkg : sorted(toEnable)) {
+            for (String pkg : order) {
                 done++;
-                busy(c, Ui.trf("Turning apps back on ({done}/{total})…", "done", done, "total", toEnable.size()));
+                busy(c, Ui.trf("Turning apps back on ({done}/{total})…", "done", done, "total", order.size()));
                 if (!present.contains(pkg)) continue;
                 // Checked: whatever didn't come back stays on the list (and in the notice); nothing disappears silently.
                 String out = adb.shell("pm enable " + pkg);
                 if (!out.contains("new state: enabled")) failed.add(pkg);
             }
-            record(adb, new HashSet<>(failed));
             busy(c, Ui.tr("Restoring the original home screen…"));
             boolean homeOk = restoreHome(adb, home);
+            if (setupBack) {
+                if (homeOk && adb.shell("pm enable " + GOOGLE_SETUP).contains("new state: enabled")) {
+                    homeOk = restoreHome(adb, home);    // a new home screen candidate can drop the default one
+                } else {
+                    failed.add(GOOGLE_SETUP);
+                }
+            }
+            record(adb, new HashSet<>(failed));
             restoreScreensaver(adb, s);
             try {
                 remoteService(c, adb, false);
@@ -418,10 +497,14 @@ final class HomeMode {
                 if (!ours && (!FREE.equals(s.optString("mode")) || s.optBoolean("homeReverted"))) return;
                 String home = originalHome(s);
                 List<String> keptOff = stringList(s, "keptOff");
-                if (!keptOff.contains(GOOGLE_SETUP)) adb.shell("pm enable " + GOOGLE_SETUP);
                 if (!restoreHome(adb, home)) {
                     AppLog.w("could not give the home screen back");
                     return;
+                }
+                // Google TV's setup app only now, with its home screen back (alone, its recovery screen takes Home).
+                if (!keptOff.contains(GOOGLE_SETUP) && adb.shell("pm path " + GOOGLE_SETUP).contains("package:")) {
+                    adb.shell("pm enable " + GOOGLE_SETUP);
+                    restoreHome(adb, home);
                 }
                 String homePkg = packageOf(home), dreamPkg = packageOf(originalDream(s));
                 if (dreamPkg != null && !keptOff.contains(dreamPkg)) adb.shell("pm enable " + dreamPkg);
@@ -469,24 +552,64 @@ final class HomeMode {
                 Set<String> owners = wifiOwners(adb);
                 boolean reverted = s.optBoolean("homeReverted");
                 String home = originalHome(s);
+                String homePkg = packageOf(home);
+                // Who saved the Wi-Fi unknown: the setup app and the home screen wait for the next check.
+                Set<String> wait = new HashSet<>();
+                if (owners == null) {
+                    owners = new HashSet<>();
+                    wait.add(GOOGLE_SETUP);
+                    if (homePkg != null) wait.add(homePkg);
+                }
                 Set<String> wanted = new HashSet<>(stringList(s, "disabled"));
                 String dream = originalDream(s);
+                // In the switch's order (Google TV's setup app before its home screen), then the rest.
+                List<String> order = new ArrayList<>();
                 for (String pkg : targets(home, dream, s.optBoolean("setupHome", true))) {
-                    if (!reverted || !(pkg.equals(packageOf(home)) || pkg.equals(GOOGLE_SETUP) || pkg.equals(packageOf(dream)))) {
+                    if (!reverted || !(pkg.equals(homePkg) || pkg.equals(GOOGLE_SETUP) || pkg.equals(packageOf(dream)))) {
                         wanted.add(pkg);
+                        order.add(pkg);
                     }
                 }
+                for (String pkg : sorted(wanted)) if (!order.contains(pkg)) order.add(pkg);
                 Set<String> disabled = new HashSet<>(stringList(s, "disabled"));
                 // Off before Free My TV: turned off again if a TV update brings one back, but never handed to
                 // Original to turn on.
                 List<String> keptOff = stringList(s, "keptOff");
-                for (String pkg : sorted(wanted)) {
-                    if (PROTECTED.contains(pkg) || !present.contains(pkg) || owners.contains(pkg)) continue;
+                Set<String> candidates = new HashSet<>();
+                for (String pkg : wanted) {
+                    if (present.contains(pkg) && !keptOff.contains(pkg) && mayTurnOff(pkg)) candidates.add(pkg);
+                }
+                Set<String> found = neededByTv(adb, candidates);
+                Set<String> needed = found == null ? candidates : found;
+                // One an earlier version turned off, that the TV turns out to need: back on (never Google TV's setup
+                // app here: with its home screen off, its recovery screen would take Home).
+                List<String> back = new ArrayList<>();
+                if (found != null) {
+                    for (String pkg : sorted(found)) {
+                        if (!pkg.equals(GOOGLE_SETUP) && disabledNow.contains(pkg) && disabled.contains(pkg)
+                                && adb.shell("pm enable " + pkg).contains("new state: enabled")) {
+                            disabled.remove(pkg);
+                            disabledNow.remove(pkg);
+                            back.add(pkg);
+                        }
+                    }
+                }
+                if (!back.isEmpty()) notice(app, Ui.trf("Turned back on {list}: the TV's inputs or remote need it.", "list", String.join(", ", back)));
+                boolean setupOn = present.contains(GOOGLE_SETUP) && !disabledNow.contains(GOOGLE_SETUP)
+                        && s.optBoolean("setupHome", true);
+                for (String pkg : order) {
+                    if (!mayTurnOff(pkg) || !present.contains(pkg) || owners.contains(pkg) || wait.contains(pkg)) continue;
                     if (disabledNow.contains(pkg)) {
                         if (!keptOff.contains(pkg)) disabled.add(pkg);
                         continue;
                     }
+                    if (needed.contains(pkg)) continue;
+                    if (pkg.equals(homePkg) && setupOn) {
+                        AppLog.w("kept the TV's home screen on: Google TV's setup app is still on");
+                        continue;
+                    }
                     if (adb.shell("pm disable-user --user 0 " + pkg).contains("disabled-user")) {
+                        if (pkg.equals(GOOGLE_SETUP)) setupOn = false;
                         if (!keptOff.contains(pkg)) disabled.add(pkg);
                         fixed.add(pkg);
                     }
@@ -518,15 +641,17 @@ final class HomeMode {
     }
 
     /**
-     * What to turn off: the TV's own home screen and screensaver, Google TV's recovery home (when setupHome: the setup
-     * app is one of the TV's home screens), and the lists above.
+     * What to turn off, in this order: Google TV's recovery home (when setupHome: the setup app is one of the TV's home
+     * screens), the TV's own home screen and screensaver, and the lists above. The setup app goes first: with the home
+     * screen off and it still on, its RecoveryActivity takes the Home button, and a restart there factory-reset a Xiaomi
+     * (CleanYourTV, MiTV-MOSR4). Android's bare "fallback home" is never turned off.
      */
     private static List<String> targets(String home, String dream, boolean setupHome) {
         List<String> out = new ArrayList<>();
-        String homePkg = packageOf(home);
+        String homePkg = home.contains("FallbackHome") ? null : packageOf(home);
+        if (setupHome) out.add(GOOGLE_SETUP);
         if (homePkg != null && !homePkg.equals(PKG)) out.add(homePkg);
         if (TV_LAUNCHER.equals(homePkg)) out.add(TV_RECOMMENDATIONS);
-        if (setupHome) out.add(GOOGLE_SETUP);
         String dreamPkg = packageOf(dream);
         if (dreamPkg != null && !dreamPkg.equals(PKG) && !dreamPkg.equals(homePkg)) out.add(dreamPkg);
         out.addAll(Arrays.asList(DEBLOAT));
@@ -567,10 +692,15 @@ final class HomeMode {
                 + " -c android.intent.category.HOME").contains(GOOGLE_SETUP + "/");
     }
 
-    /** Apps that saved a Wi-Fi network ("cname" in the Wi-Fi service's list of saved networks). */
+    /**
+     * Apps that saved a Wi-Fi network ("cname" in the Wi-Fi service's list of saved networks), or null when the Wi-Fi
+     * service didn't answer (some firmware turns its dumps off): then nobody can tell.
+     */
     private static Set<String> wifiOwners(Adb adb) throws IOException {
+        String out = adb.shell("dumpsys wifi | grep -o -E 'cname=[^ ]*|^Wi-Fi is [a-z]+'");
+        if (!out.contains("cname=") && !out.contains("Wi-Fi is")) return null;
         Set<String> owners = new HashSet<>();
-        Matcher m = Pattern.compile("cname=([\\w.]+)").matcher(adb.shell("dumpsys wifi | grep -o 'cname=[^ ]*'"));
+        Matcher m = Pattern.compile("cname=([\\w.]+)").matcher(out);
         while (m.find()) owners.add(m.group(1));
         return owners;
     }

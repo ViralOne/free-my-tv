@@ -38,7 +38,7 @@ About ten minutes. You need a Google TV or Android TV (Android 8 or newer) and a
    > Install Free My TV (github.com/simbasjungles/free-my-tv) on my TV at 192.168.1.50. I live in Lisbon.
 
    It downloads the code, installs the tools it needs, builds the app and puts it on your TV, and asks before anything important. Swap in your TV's IP and your city.
-3. **On the TV**, open *Free My TV* → *Home Screen* → *Free My TV*, and accept the debugging prompt (tick *Always allow*).
+3. **On the TV**, open *Free My TV* → *Home Screen* → *Free My TV*. That's when the TV asks *Allow USB debugging?* for Free My TV: tick *Always allow* and accept.
 
 ### The manual way
 
@@ -63,7 +63,7 @@ About ten minutes. You need a Google TV or Android TV (Android 8 or newer) and a
    ```bash
    adb shell "appops set io.freemytv AUTO_START allow || appops set io.freemytv APP_AUTO_START allow"
    ```
-5. **On the TV**, open *Free My TV* → *Home Screen* → *Free My TV*.
+5. **On the TV**, open *Free My TV* → *Home Screen* → *Free My TV*. The TV asks *Allow USB debugging?* once more, now for Free My TV itself: tick *Always allow* and accept.
 
 ## LG TVs (webOS)
 
@@ -112,7 +112,7 @@ The first values come from `config.properties`, created by the first build (Goog
 | `latitude`, `longitude` | Your city, for the weather and the sunset | New York |
 | `city` | The name on the weather card | `Weather` |
 | `hide_animation` | Leave cartoons and anime out of the picks | `false` |
-| `language` | `auto` (follows the TV), or a language with a [translation](#translations) (`en`, `pt`, `es`, `de`, `ru`, `fr`, `ja`…) on Google TV; `en`, `es`, `pt`, `ru` or `de` on LG and Samsung | `auto` |
+| `language` | `auto` (follows the TV), or a language with a [translation](#translations) (`en`, `pt`, `es`, `de`, `ru`, `fr`, `ja`…) | `auto` |
 | `show_crypto` | Show Binance crypto prices on home and screensaver | `true` |
 | `currency` | Crypto prices in `USD`, `EUR`, `BRL`… | `USD` |
 | `temperature` | `C`, `F` or `auto` | `auto` |
@@ -121,6 +121,7 @@ The first values come from `config.properties`, created by the first build (Goog
 | `jellyfin_url`, `jellyfin_key`, `jellyfin_user` | Optional: a *Continue* tab with what you're watching on your Jellyfin server, opened in Wholphin (API key: Jellyfin → Dashboard → API Keys) | empty |
 | `hikari_url`, `hikari_token` | Optional: an *Anime* tab from your [Hikari](https://github.com/ViralOne/hikari) deck (watching, airing now, trending); owned titles open in Wholphin, the rest can be requested (token: Hikari → Settings) | empty |
 | `jellyseerr_url`, `jellyseerr_key` | Optional: request movies and shows that are neither in your Jellyfin library nor on an app on the TV (OK, then OK again) | empty |
+| `hide_apps` | Apps to leave out of the shelf, All Apps and the picks, by id or name (part of it), comma separated; for apps the TV ships that can't be uninstalled, like Samsung's built-in Netflix. LG and Samsung only | empty |
 
 Changed something? Run `./build.sh` and install again. Keep `freemytv.keystore`: updates are signed with it.
 
@@ -150,7 +151,8 @@ To remove it for good, switch to *Original* first, then uninstall *Free My TV* (
   - on KTC-made TVs (NextStar), Anoki's screen-content recognition (ACR), the store demo and the manual;
   - Google Assistant, only with `disable_assistant=true`.
 - On TCL TVs, the remote's Netflix, YouTube and Prime buttons keep working through a small accessibility service that only reads those buttons. Pick what each one opens in *Free My TV* → *Remote Buttons*; *Original* turns the service off. On Vestel-made TVs (F&U and other store brands) and Xiaomi (Formovie) projectors the same goes for the Netflix button, and on KTC-made TVs (NextStar) for the Tabii button. On Sony TVs, the BRAVIA CORE, Netflix, Disney+, Prime Video, YouTube and Crunchyroll buttons (and Google Play, on remotes that have it) can each open the app you pick, or keep Sony's default.
-- Picture, sound, inputs, remote pairing, Google services and the Play Store are on a protected list, checked before every change.
+- Picture, sound, inputs, remote pairing, Google services and the Play Store are on a protected list, checked before every change, and so are Android's own pieces and factory menus. Before anything goes off, the TV is asked whether its inputs or its remote's Input key depend on it; those stay on.
+- On Google TV, the setup app goes off before the stock home screen and comes back after it, so its recovery screen never takes over the Home button in between.
 - Apps that saved a Wi-Fi network are never turned off, since Android would erase the network. If the TV's first setup saved yours, the switch asks you to forget the network and connect again in Settings first (saved networks out of range don't show there; Claude Code can remove them).
 
 ## Any TV
@@ -208,11 +210,11 @@ The website ([freemytv.io](https://freemytv.io)) is in [`docs/`](docs): plain HT
 
 ## Translations
 
-On Google TV, each language is one file, [`app/assets/i18n/<lang>.json`](app/assets/i18n), keyed by the English text
-in the code. *Automatic* follows the TV's language and uses any language that has a file (English otherwise); *Home
+On Google TV, LG and Samsung, each language is one file, [`app/assets/i18n/<lang>.json`](app/assets/i18n), keyed by the
+English text in the code. *Automatic* follows the TV's language and uses any language that has a file (English otherwise); *Home
 Settings* → *Language* lists them all. Today: English, Portuguese, Spanish, German, French, Italian, Dutch, Polish,
 Swedish, Danish, Norwegian, Finnish, Czech, Romanian, Turkish, Russian, Ukrainian, Greek, Japanese, Korean, Simplified
-Chinese, Hindi, Indonesian and Vietnamese. Portuguese, Spanish, German and Russian were translated by hand and are the
+Chinese, Hindi, Indonesian, Vietnamese and Thai. Portuguese, Spanish, German, Russian and Thai were translated by hand and are the
 reference (fix them by hand); the others were machine-made, and corrections from native speakers are welcome.
 
 - **Add a language:** `python3 tools/translate.py --new ca`, then fill `app/assets/i18n/ca.json` by hand, or with
@@ -226,8 +228,7 @@ reference (fix them by hand); the others were machine-made, and corrections from
   category the language uses (Russian `"one:{n} сезон|few:{n} сезона|many:{n} сезонов|other:{n} сезона"`, Japanese
   just `"other:{n}シーズン"`), and Android's plural rules pick the one for each number.
 - **Limits:** right-to-left languages (Arabic, Hebrew, Persian) would need the layout mirrored, so they aren't there
-  yet. Chinese, Japanese, Korean and Hindi are drawn with the TV's system font (Inter has no such letters). The LG and
-  Samsung app has English, Portuguese, Spanish, German and Russian.
+  yet. Chinese, Japanese, Korean and Hindi are drawn with the TV's system font (Inter has no such letters).
 
 ## Privacy
 
