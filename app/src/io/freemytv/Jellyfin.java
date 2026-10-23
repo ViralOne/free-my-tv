@@ -116,23 +116,32 @@ final class Jellyfin {
 
     /**
      * The shows and movies on the server, for matching Hikari's anime to them: {id, name, original title, AniList id,
-     * backdrop tag, AniDB id, Shoko series id, TMDB id, "Series" or "Movie"} (empty strings where missing; Shokofin
+     * backdrop tag, AniDB id, Shoko series id, TMDB id, "Series" or "Movie", watched 0 to 1, episodes left unwatched}
+     * (empty strings where missing; Shokofin
      * sets the anime ids).
      */
     static List<String[]> library() throws IOException, org.json.JSONException {
         String want = Prefs.jellyfinUser();
         if (userId == null || !want.equalsIgnoreCase(userName)) findUser(want);
         JSONArray items = get("/Items?userId=" + userId + "&includeItemTypes=Series,Movie&recursive=true"
-                + "&fields=ProviderIds,OriginalTitle&enableImageTypes=Backdrop&imageTypeLimit=1").getJSONArray("Items");
+                + "&fields=ProviderIds,OriginalTitle,RecursiveItemCount&enableImageTypes=Backdrop&imageTypeLimit=1")
+                .getJSONArray("Items");
         List<String[]> out = new ArrayList<>();
         for (int i = 0; i < items.length(); i++) {
             JSONObject o = items.getJSONObject(i);
             JSONObject ids = o.optJSONObject("ProviderIds");
             JSONArray tags = o.optJSONArray("BackdropImageTags");
             if (ids == null) ids = new JSONObject();
+            // How much of it you've watched, by Jellyfin's own count (episodes on disk, played or not).
+            JSONObject user = o.optJSONObject("UserData");
+            int count = o.optInt("RecursiveItemCount"), unplayed = user == null ? 0 : user.optInt("UnplayedItemCount");
+            boolean played = user != null && user.optBoolean("Played");
+            float watched = "Movie".equals(o.optString("Type")) ? (played ? 1 : 0)
+                    : count > 0 ? (float) (count - unplayed) / count : played ? 1 : 0;
             out.add(new String[] {o.optString("Id"), o.optString("Name"), o.optString("OriginalTitle"), ids.optString("AniList"),
                     tags == null || tags.length() == 0 ? "" : tags.optString(0), ids.optString("AniDB"),
-                    ids.optString("Shoko Series"), ids.optString("Tmdb", ids.optString("TheMovieDb")), o.optString("Type")});
+                    ids.optString("Shoko Series"), ids.optString("Tmdb", ids.optString("TheMovieDb")), o.optString("Type"),
+                    String.valueOf(Math.max(0, Math.min(1, watched))), String.valueOf(unplayed)});
         }
         return out;
     }

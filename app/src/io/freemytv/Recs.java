@@ -80,7 +80,9 @@ final class Recs {
 
     private static final String API = "https://api.themoviedb.org/3";
     /** The backdrops: on a 720p UI, TMDB's 1280-wide copy shows the same and is lighter to download and decode. */
-    private static final String IMAGES = "https://image.tmdb.org/t/p/" + (Backdrop.W <= 1280 ? "w1280" : "original");
+    // TMDB's 1280-wide copy: the cards are at most 1092 wide and the background is blurred, so the original (up to 4K,
+    // several MB) only made the first start slow to download and decode.
+    private static final String IMAGES = "https://image.tmdb.org/t/p/w1280";
     /** TMDB's Animation genre (movies and shows: cartoons and anime), left out with hide_animation=true. */
     private static final int ANIMATION = 16;
     private static final String IMAGES_SMALL = "https://image.tmdb.org/t/p/w780", IMAGES_POSTER = "https://image.tmdb.org/t/p/w500";
@@ -171,7 +173,10 @@ final class Recs {
     private final Map<String, Bitmap> blurs = new LinkedHashMap<>(64, 0.75f, true);
     private final Map<String, Bitmap> logos = new LinkedHashMap<>(16, 0.75f, true);
     private final java.util.Set<String> logoPending = new java.util.HashSet<>();
-    private final ExecutorService posterIo = Executors.newSingleThreadExecutor();
+    // Three at a time: the rows' posters, the widened cards' pictures and logos arrive together on a first start.
+    private final ExecutorService posterIo = Executors.newFixedThreadPool(3);
+    /** Your own servers' lists (Jellyfin, Hikari: Hikari can take many seconds), apart from the pictures' queue. */
+    private final ExecutorService ownIo = Executors.newSingleThreadExecutor();
     private final Map<String, Bitmap> posters = new LinkedHashMap<>(64, 0.75f, true);   // least recently drawn first
     private final java.util.Set<String> posterPending = new java.util.HashSet<>();
     /** Your Jellyfin library by TMDB id ("movie:603", "tv:1399" → "item id/Movie"), for opening titles in Wholphin. */
@@ -652,7 +657,7 @@ final class Recs {
         if (forWhom.equals(ownFor.get(kind)) && now - at < every && now >= at) return;
         if (!ownFetching.add(kind)) return;
         ownAt.put(kind, now);
-        io.execute(() -> {
+        ownIo.execute(() -> {
             try {
                 List<Pick> list = fetch.run(Prefs.cards());
                 ownFor.put(kind, forWhom);

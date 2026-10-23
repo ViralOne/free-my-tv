@@ -54,12 +54,14 @@ final class Hikari {
         List<String[]> library = libraryOrEmpty();
         List<Recs.Pick> out = new ArrayList<>();
         Set<Integer> seen = new HashSet<>();
-        // Watching: started in Jellyfin and not finished, the most recently played first, from any of Hikari's rows.
+        // Watching: started and with episodes left to watch, by Jellyfin's own count (Hikari's can count a whole
+        // multi-season show against one season), the most recently played first, from any of Hikari's rows.
         List<JSONObject> watching = new ArrayList<>();
         for (JSONArray media : byId.values()) {
             for (int i = 0; media != null && i < media.length(); i++) {
                 JSONObject m = media.getJSONObject(i), w = m.optJSONObject("watch");
-                if (w != null && w.optInt("played") > 0 && w.optInt("played") < w.optInt("total") && seen.add(m.optInt("id"))) {
+                String[] item = w == null ? null : match(m, m.optJSONObject("title"), library);
+                if (item != null && Float.parseFloat(item[9]) > 0 && Integer.parseInt(item[10]) > 0 && seen.add(m.optInt("id"))) {
                     watching.add(m);
                 }
             }
@@ -152,8 +154,7 @@ final class Hikari {
         if (!banner.isEmpty()) p.banner = banner;
         String story = m.optString("synopsis", "");
         if (!story.isEmpty() && !story.equals("null")) p.synopsis = story.length() > 400 ? story.substring(0, 400) : story;
-        JSONObject w = m.optJSONObject("watch");
-        if (w != null && w.optInt("total") > 0) p.progress = Math.min(1f, (float) w.optInt("played") / w.optInt("total"));
+        if (item != null) p.progress = Float.parseFloat(item[9]);     // Jellyfin's count of what you've watched
         return p;
     }
 
