@@ -3018,12 +3018,9 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
                 retarget(false);
             }
         }
-        // Every card of this tab and the first three of the tabs next to it ready: moving to a tab is instant. (Recs
-        // keeps that many in memory; asking for more would push out the ones on screen.)
-        for (int t = Math.max(0, tab - 1); t <= Math.min(TAB_COUNT - 1, tab + 1); t++) {
-            List<Recs.Pick> l = t == tab ? cards : recs.now(TAB_KIND[t]);
-            for (int i = 0; i < Math.min(l.size(), t == tab ? MAX_CARDS : 3); i++) recs.backdrop(l.get(i));
-        }
+        // Only this tab's cards on screen and the next one: the rest load as the focus reaches them (drawing a card
+        // asks for its picture), and other tabs when you go to them.
+        for (int i = 0; i < Math.min(cards.size(), Recs.CARDS_READY); i++) recs.backdrop(cards.get(i));
         Backdrop b = cards.isEmpty() ? null : recs.backdrop(cards.get(0));
         if (cards.isEmpty() || b != null) showBackdrop(b);
         updateRows();

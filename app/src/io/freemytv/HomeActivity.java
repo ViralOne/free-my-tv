@@ -68,7 +68,10 @@ public class HomeActivity extends Activity {
 
     @Override public void onTrimMemory(int level) {
         super.onTrimMemory(level);
-        if (level >= TRIM_MEMORY_COMPLETE) Recs.get(this).trim();
+        // Hidden behind another app: give back the pictures the home screen can make again from the disk cache, so
+        // Android doesn't have to close it (pressing Home then starts it from scratch).
+        if (level >= TRIM_MEMORY_BACKGROUND) Recs.get(this).trimPictures();
+        if (level >= TRIM_MEMORY_MODERATE) Recs.get(this).trim();
     }
 
     @Override public boolean dispatchKeyEvent(KeyEvent event) {

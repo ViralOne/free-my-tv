@@ -143,7 +143,8 @@ final class Recs {
     private final ExecutorService io = Executors.newSingleThreadExecutor();
     private final Handler main = new Handler(Looper.getMainLooper());
     private final List<Listener> listeners = new ArrayList<>();
-    private final Map<String, Backdrop> images = new LinkedHashMap<>();   // this hour's, built and ready to draw
+    // This hour's, built and ready to draw; least recently drawn first, so the cards on screen are never the ones pushed out.
+    private final Map<String, Backdrop> images = new LinkedHashMap<>(16, 0.75f, true);
     private final java.util.Set<String> pending = new java.util.HashSet<>();
     private volatile List<Pick> picks = new ArrayList<>();
     private volatile int period = -1;
@@ -162,15 +163,17 @@ final class Recs {
     private interface Fetch { List<Pick> run(int max) throws Exception; }
     /** Most cards in a row (the home screen's first row and each row below it). */
     static final int MAX_OWN = 12;
+    /** First-row cards whose pictures are made ahead: the ones on screen (a wide one and about three tall) and the next. */
+    static final int CARDS_READY = 5;
     /** TMDB rows: trending on your apps, new on your apps, and trending but on none of them (Jellyfin or Jellyseerr). */
     static final String TRENDING = "trending", NEW = "new", EVERYWHERE = "everywhere";
     /** Poster size for the rows below the first (the focused size, so it stays sharp). */
     static final int POSTER_W = 268, POSTER_H = 402;
-    /** Posters kept ready (GPU, ~430 KB each): the ~24 that fit on screen, plus the next few. */
-    private static final int MAX_POSTERS = 32;
-    /** The landscape picture of a card widened by focus (720 × 405, ~1.1 MB): only the few around the focus. */
+    /** Posters kept ready (GPU, ~430 KB each): the ones that fit on screen, plus a few. */
+    private static final int MAX_POSTERS = 28;   // three rows of up to 8 on screen, plus a few
+    /** The landscape picture of a card widened by focus (720 × 405, ~1.1 MB): only the focused one and its neighbors. */
     static final int STILL_W = 720, STILL_H = 405;
-    private static final int MAX_STILLS = 8;
+    private static final int MAX_STILLS = 3;
     private final Map<String, Bitmap> stills = new LinkedHashMap<>(16, 0.75f, true);
     private final java.util.Set<String> stillPending = new java.util.HashSet<>();
     private final Map<String, Bitmap> blurs = new LinkedHashMap<>(64, 0.75f, true);
@@ -1228,10 +1231,9 @@ final class Recs {
             if (forLight != light) return;   // the design changed midway: this one is stale
             synchronized (images) {
                 images.put(p.backdrop, backdrop);
-                // The light design keeps every tab's cards (three per tab) ready, the "Continue" tab's too.
-                // The current tab's first-row cards and its neighbors' first three (each ~1.3 MB of blurred copies on
-                // the Java heap besides the GPU images: the TV has little memory to spare).
-                int max = forLight ? Prefs.cards() + 7 : 4;
+                // Only the cards on screen and the next few (each ~1.3 MB of blurred copies on the Java heap besides
+                // ~2.6 MB of GPU images: the TV has little memory to spare). Other tabs load when you go to them.
+                int max = forLight ? CARDS_READY + 2 : 4;
                 while (images.size() > max) images.remove(images.keySet().iterator().next());
             }
             notifyListeners();
@@ -1240,6 +1242,19 @@ final class Recs {
             f.delete();
             AppLog.w("recommendation image: " + e.getMessage());
         }
+    }
+
+    /**
+     * Home is hidden and the TV is short of memory: the rows' posters, the widened cards' pictures and the logos go
+     * (they come back from the disk cache in a moment). Dropped, not recycled: a frame being drawn may still use one.
+     */
+    void trimPictures() {
+        synchronized (posters) {
+            posters.clear();
+            blurs.clear();
+        }
+        synchronized (stills) { stills.clear(); }
+        synchronized (logos) { logos.clear(); }
     }
 
     void trim() {
