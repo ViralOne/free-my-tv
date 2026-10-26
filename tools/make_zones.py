@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""Writes web/zones.js: each time zone's main city, with its country and position, from the tz database.
+"""Writes web/zones.js and app/assets/zones.json: each time zone's main city, with its country and position, from the
+tz database.
 
     python3 tools/make_zones.py                      # reads /usr/share/zoneinfo (macOS, Linux)
     python3 tools/make_zones.py path/to/zoneinfo
 
-The LG and Samsung home screen uses it when it was built without a city (--generic, as in the GitHub release): the
-TV's time zone ("America/Sao_Paulo") gives the weather's city, and its country (BR) the currency and TMDB region.
+The home screen uses it when it was built without a city (--generic, as in the GitHub release), on LG and Samsung
+(zones.js) and on Google TV (zones.json, read by Place): the TV's time zone ("America/Sao_Paulo") gives the weather's
+city, and its country (BR) the currency and TMDB region.
 zone.tab and tzdata.zi are in the public domain.
 """
 import json
@@ -61,6 +63,10 @@ def main():
                 ' * Time zone → "country,latitude,longitude[,city]", or "=" + the zone it\'s another name for. */\n')
         f.write('var ZONES = %s;\n' % json.dumps(zones, ensure_ascii=False, separators=(',', ':'), sort_keys=True))
     print('Wrote %s (%d zones, %d KB)' % (os.path.relpath(out, ROOT), len(zones), os.path.getsize(out) // 1024))
+    out = os.path.join(ROOT, 'app', 'assets', 'zones.json')
+    with open(out, 'w', encoding='utf-8') as f:
+        f.write(json.dumps(zones, ensure_ascii=False, separators=(',', ':'), sort_keys=True) + '\n')
+    print('Wrote %s' % os.path.relpath(out, ROOT))
 
 
 if __name__ == '__main__':

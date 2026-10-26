@@ -1,11 +1,14 @@
 package io.freemytv;
 
 import android.content.Context;
+import android.os.Build;
+import android.os.SystemClock;
 import android.util.Base64;
 
 import java.io.ByteArrayOutputStream;
 import java.io.Closeable;
 import java.io.DataInputStream;
+import java.io.EOFException;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
@@ -89,7 +92,7 @@ final class Adb implements Closeable {
                 Message m;
                 try {
                     m = adb.read();
-                } catch (SocketTimeoutException e) {
+                } catch (EOFException | SocketTimeoutException e) {
                     throw new IOException(offeredKey ? Ui.tr("debugging permission wasn't accepted on the TV") : Ui.tr("the TV's ADB didn't respond"));
                 }
                 if (m.command == CNXN) {
@@ -106,7 +109,25 @@ final class Adb implements Closeable {
                     adb.send(AUTH, AUTH_RSAPUBLICKEY, 0, publicKeyBlob(keys.getPublic()));
                     offeredKey = true;
                     if (approval != null) approval.waiting();
-                    s.setSoTimeout(approvalMs);
+                    if (Build.VERSION.SDK_INT >= 30) {
+                        s.setSoTimeout(approvalMs);
+                    } else {
+                        // Android 8 to 10 hand the answer to the first connection that offered a key (on 10, or signed
+                        // in) while it stays open, often the computer's adb (#221). "Always allow" saves our key, so a
+                        // new connection that only signs gets in.
+                        long until = SystemClock.elapsedRealtime() + approvalMs;
+                        while (adb.in.available() == 0) {
+                            if (SystemClock.elapsedRealtime() > until) {
+                                throw new IOException(Ui.tr("debugging permission wasn't accepted on the TV"));
+                            }
+                            SystemClock.sleep(2000);
+                            Adb fresh = signedIn(keys);
+                            if (fresh != null) {
+                                adb.close();
+                                return fresh;
+                            }
+                        }
+                    }
                 } else {
                     throw new IOException(Ui.tr("the TV rejected the app's key"));
                 }
@@ -115,6 +136,29 @@ final class Adb implements Closeable {
             adb.close();
             throw e;
         }
+    }
+
+    /** A new connection that only signs (it never offers the key, so no second prompt); null while the TV doesn't know it. */
+    private static Adb signedIn(KeyPair keys) {
+        Socket s = new Socket();
+        try {
+            s.connect(new InetSocketAddress("127.0.0.1", 5555), 3000);
+            s.setSoTimeout(5000);
+            Adb adb = new Adb(s);
+            adb.send(CNXN, VERSION, MAX_DATA, "host::\0".getBytes(StandardCharsets.US_ASCII));
+            Message m = adb.read();
+            if (m.command == AUTH && m.arg0 == AUTH_TOKEN) {
+                adb.send(AUTH, AUTH_SIGNATURE, 0, sign(keys.getPrivate(), m.data));
+                m = adb.read();
+            }
+            if (m.command == CNXN) {
+                s.setSoTimeout(20_000);
+                return adb;
+            }
+        } catch (IOException | RuntimeException ignored) {
+        }
+        try { s.close(); } catch (IOException ignored) {}
+        return null;
     }
 
     /** Runs a command in the TV's shell and returns its output (stdout and stderr together). */

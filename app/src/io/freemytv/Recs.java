@@ -4,6 +4,8 @@ import android.content.Context;
 import android.content.SharedPreferences;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.net.ConnectivityManager;
+import android.net.Network;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
@@ -70,6 +72,7 @@ final class Recs {
         // (anime you're watching; null: opens the show)
         String section, playId;
         long positionMs;
+        java.io.File photo;     // one of your own photos (Photos): no title, no caption
     }
 
     interface Listener {
@@ -78,7 +81,8 @@ final class Recs {
         default void onPoster() { onRecs(); }
     }
 
-    private static final String API = "https://api.themoviedb.org/3";
+    // TMDB's own mirror of api.themoviedb.org, on the images' domain: some ISPs block the other name (Jio, #327)
+    private static final String API = "https://api.tmdb.org/3";
     /** The backdrops: on a 720p UI, TMDB's 1280-wide copy shows the same and is lighter to download and decode. */
     // TMDB's 1280-wide copy: the cards are at most 1092 wide and the background is blurred, so the original (up to 4K,
     // several MB) only made the first start slow to download and decode.
@@ -88,26 +92,48 @@ final class Recs {
     private static final String IMAGES_SMALL = "https://image.tmdb.org/t/p/w780", IMAGES_POSTER = "https://image.tmdb.org/t/p/w500";
     private static final long LIST_EVERY = 6 * 3600_000L;
     /** Bump when what is saved for each title changes (the saved list is discarded and fetched again). */
-    private static final int CACHE_VERSION = 6;
+    private static final int CACHE_VERSION = 7;
     private static final int MANHA = 0, TARDE = 1, NOITE = 2;
     /** Service name on TMDB (part of the name, lowercase) → TV app (HomeApps key, package). */
     private static final String[][] SERVICES = {
         {"netflix", "netflix", "com.netflix.ninja"},
         {"prime video", "prime", "com.amazon.amazonvideo.livingroom"},
+        {"prime video", "prime", "com.amazon.firebat"},
+        {"prime video", "prime", "com.amazon.avod"},
         {"disney", "disney", "com.disney.disneyplus"},
         {"hulu", "hulu", "com.hulu.livingroomplus"},
+        {"hulu", "hulu", "com.hulu.plus"},
         {"paramount", "paramount", "com.cbs.ott"},
+        {"paramount", "paramount", "com.cbs.ca"},      // Paramount+ outside the US (a Sony in the UK; Canada)
         {"peacock", "peacock", "com.peacocktv.peacockandroid"},
+        {"peacock", "peacock", "com.peacock.peacockfiretv"},
         {"globoplay", "globoplay", "com.globo.globotv"},
         {"max", "max", "com.wbd.stream"},
         {"max", "max", "com.hbo.hbonow"},
         {"apple tv", "appletv", "com.apple.atve.androidtv.appletv"},
         {"apple tv", "appletv", "com.apple.atve.sony.appletv"},   // Sony's own build
+        {"apple tv", "appletv", "com.apple.atve.amazon.appletv"},
         {"hotstar", "hotstar", "in.startv.hotstar"},   // TMDB: "JioHotstar" (earlier "Disney Plus Hotstar")
-        {"okko", "okko", "ru.more.play"},
         {"crunchyroll", "crunchyroll", "com.crunchyroll.crunchyroid"},
+        {"now tv", "now", "com.bskyb.nowtv.beta"},     // UK: Sky's NOW (TMDB: "Now TV", "Now TV Cinema")
         {"oneplay", "oneplay", "net.cme.voyo.cz.tvapp"},    // Czechia: Voyo and O2 TV became Oneplay, same app
+        // Germany (TMDB's watch providers for DE)
+        {"ard mediathek", "ard", "de.swr.avp.ard.tv"},
+        {"zdf", "zdf", "com.zdf.android.mediathek"},
+        {"arte", "arte", "tv.arte.plus7"},
+        {"joyn", "joyn", "de.prosiebensat1digital.seventv"},   // TMDB: "Joyn" and "Joyn Plus", same app
+        {"rtl+", "rtl", "de.rtli.tvnow"},
+        {"wow", "wow", "de.sky.online"},                       // Sky's WOW (was Sky Ticket)
+        {"magenta", "magenta", "de.telekom.magentatv.tv"},     // TMDB: "MagentaTV" and "Magenta TV+"
+        // Russia (TMDB's watch providers for RU)
+        {"okko", "okko", "ru.more.play"},
+        {"kinopoisk", "kinopoisk", "ru.kinopoisk.tv"},
+        {"premier", "premier", "gpm.tnt_premier"},
+        {"amediateka", "amediateka", "ru.amediateka"},
+        {"more tv", "wink", "ru.rt.video.app.tv"},   // TMDB: "More TV" (more.tv is part of Rostelecom's Wink now)
     };
+    /** Services matched by their whole name, where a part would catch another: "WOW Presents Plus", "Belas Artes à La Carte". */
+    private static final Set<String> WHOLE_NAME = new HashSet<>(Arrays.asList("wow", "arte"));
     private static final Map<String, String> SERVICE_NAME = new HashMap<>();
     static {
         SERVICE_NAME.put("netflix", "Netflix");
@@ -123,10 +149,22 @@ final class Recs {
         SERVICE_NAME.put("hotstar", "JioHotstar");
         SERVICE_NAME.put("okko", "Okko");
         SERVICE_NAME.put("crunchyroll", "Crunchyroll");
+        SERVICE_NAME.put("now", "NOW");
         SERVICE_NAME.put("oneplay", "Oneplay");
+        SERVICE_NAME.put("ard", "ARD Mediathek");
+        SERVICE_NAME.put("zdf", "ZDF");
+        SERVICE_NAME.put("arte", "ARTE");
+        SERVICE_NAME.put("joyn", "Joyn");
+        SERVICE_NAME.put("rtl", "RTL+");
+        SERVICE_NAME.put("wow", "WOW");
+        SERVICE_NAME.put("magenta", "MagentaTV");
+        SERVICE_NAME.put("kinopoisk", "Кинопоиск");
+        SERVICE_NAME.put("premier", "Premier");
+        SERVICE_NAME.put("amediateka", "Амедиатека");
+        SERVICE_NAME.put("wink", "Wink");
     }
     /** Country for "what streams where" (config.properties "tmdb_region", e.g. US, GB, BR). */
-    static final String REGION = Config.TMDB_REGION.trim().toUpperCase(Locale.ROOT);
+    static final String REGION = Place.region();
     /** The errors the settings say in words: TMDB lists none of the TV's apps in REGION, or the TV has none we know. */
     static final String NO_APPS = "none of the TV's streaming services are on TMDB";
     static final String NO_KNOWN_APPS = "none of the TV's streaming apps can give picks";
@@ -141,6 +179,9 @@ final class Recs {
     private final Context context;
     private final SharedPreferences cache;
     private final ExecutorService io = Executors.newSingleThreadExecutor();
+    // The cards' pictures, apart from the lists: on a first start the list task fetches every title's details first,
+    // and the cards on screen shouldn't wait behind it.
+    private final ExecutorService imageIo = Executors.newSingleThreadExecutor();
     private final Handler main = new Handler(Looper.getMainLooper());
     private final List<Listener> listeners = new ArrayList<>();
     // This hour's, built and ready to draw; least recently drawn first, so the cards on screen are never the ones pushed out.
@@ -205,6 +246,24 @@ final class Recs {
                 if (list != null) own.put(kind, Jellyfin.parse(new JSONArray(list)));
             }
         } catch (Exception ignored) {
+        }
+        // Right after the TV starts, the first fetch runs before the Wi-Fi is up and fails, which would hold the old
+        // picks for the 10 minutes after a failure: as soon as the network comes, try again.
+        try {
+            ConnectivityManager cm = c.getSystemService(ConnectivityManager.class);
+            if (cm != null) cm.registerDefaultNetworkCallback(new ConnectivityManager.NetworkCallback() {
+                @Override public void onAvailable(Network network) {
+                    if (failedAt == 0) return;
+                    failedAt = 0;   // the next screen to show fetches at once
+                    main.postDelayed(() -> {
+                        if (listeners.isEmpty()) return;   // nothing showing: no downloads under another app
+                        AppLog.w("recommendations: network up, fetching again");
+                        refreshIfStale();
+                    }, 2000);   // the routes and DNS settle just after
+                }
+            });
+        } catch (RuntimeException e) {
+            AppLog.w("recommendations: no network callback: " + e.getMessage());
         }
     }
 
@@ -566,7 +625,7 @@ final class Recs {
             if (b != null) return b;
             if (!pending.add(key)) return null;
         }
-        io.execute(() -> {
+        imageIo.execute(() -> {
             try {
                 loadImage(p);
             } finally {
@@ -797,7 +856,7 @@ final class Recs {
         JSONArray providers = get("/watch/providers/movie?language=" + lang() + "&watch_region=" + REGION).getJSONArray("results");
         for (int i = 0; i < providers.length(); i++) {
             JSONObject o = providers.getJSONObject(i);
-            String[] s = service(o.optString("provider_name"));
+            String[] s = service(o.optString("provider_name"), o.optInt("provider_id"));
             if (s != null && installed(s[2])) services.put(o.getInt("provider_id"), s);
         }
         if (services.isEmpty()) throw new IOException(NO_APPS);
@@ -962,7 +1021,7 @@ final class Recs {
         JSONObject br = wp == null ? null : wp.optJSONObject("results") == null ? null : wp.optJSONObject("results").optJSONObject(REGION);
         JSONArray flat = br == null ? null : br.optJSONArray("flatrate");
         for (int i = 0; flat != null && i < flat.length() && p.app == null; i++) {
-            String[] s = service(flat.getJSONObject(i).optString("provider_name"));
+            String[] s = service(flat.getJSONObject(i).optString("provider_name"), flat.getJSONObject(i).optInt("provider_id"));
             if (s != null && installed(s[2])) {
                 p.app = s[1];
                 p.pkg = s[2];
@@ -1049,11 +1108,15 @@ final class Recs {
     }
 
     /** The SERVICES row for a TMDB name: the installed one first, when a service has more than one package. */
-    private String[] service(String name) {
+    private String[] service(String name, int providerId) {
         String n = name.toLowerCase(Locale.ROOT);
         String[] first = null;
+        // "HBO Max Amazon Channel", "Apple TV Amazon Channel"...: a subscription sold inside another app, not this one.
+        if (n.contains(" channel")) return null;
         for (String[] s : SERVICES) {
-            if (!(s[0].equals("max") ? n.matches(".*\\bmax\\b.*") : n.contains(s[0]))) continue;
+            // Apple TV: only the streaming service (TMDB provider 350); provider 2 is the Apple TV Store (rent or buy).
+            if (s[1].equals("appletv") && providerId != 350) continue;
+            if (!(s[0].equals("max") ? n.matches(".*\\bmax\\b.*") : WHOLE_NAME.contains(s[0]) ? n.equals(s[0]) : n.contains(s[0]))) continue;
             if (installed(s[2])) return s;
             if (first == null) first = s;
         }
@@ -1092,7 +1155,7 @@ final class Recs {
     // MARK: - Watchmode (the title's own page in its app; the free plan's web addresses are what the apps open)
 
     private static String linkKey(Pick p) {
-        return "wm:" + p.kind + p.id + p.app;
+        return "wm2:" + p.kind + p.id + p.app;   // wm2: links found before the channel check are looked up again
     }
 
     private boolean needsLink(Pick p) {
@@ -1127,7 +1190,10 @@ final class Recs {
                     JSONObject s = sources.getJSONObject(i);
                     String name = s.optString("name").toLowerCase(Locale.ROOT).replace(" ", "");
                     String want = service[0].replace(" ", "");
-                    boolean same = want.equals("max") ? name.equals("max") : name.contains(want);
+                    // Not a channel sold inside another app ("AppleTV+ Amazon Channel", "Paramount+ (Via Amazon Prime)"):
+                    // that link opens Amazon or Apple's app, not the one the pick is for.
+                    boolean resold = name.contains("channel") || name.contains("(via");
+                    boolean same = !resold && (want.equals("max") || WHOLE_NAME.contains(want) ? name.equals(want) : name.contains(want));
                     if (same && s.optString("type").equals("sub") && s.optString("web_url").startsWith("https://")) link = s.optString("web_url");
                 }
             }
@@ -1188,7 +1254,8 @@ final class Recs {
         if (f.exists()) return;
         //noinspection ResultOfMethodCallIgnored
         f.getParentFile().mkdirs();
-        File part = new File(f.getPath() + ".part");
+        // Its own .part per thread: the list task and the pictures' queue may download the same image at once.
+        File part = new File(f.getPath() + "." + Thread.currentThread().getId() + ".part");
         HttpURLConnection c = p.image != null && p.image.startsWith("https://") ? (HttpURLConnection) new URL(p.image).openConnection()
                 : p.image != null ? Jellyfin.open(p.image)
                 : (HttpURLConnection) new URL(IMAGES + p.backdrop).openConnection();
@@ -1222,10 +1289,11 @@ final class Recs {
             BitmapFactory.decodeFile(f.getPath(), bounds);
             BitmapFactory.Options opts = new BitmapFactory.Options();
             opts.inSampleSize = 1;
-            while (bounds.outWidth / (opts.inSampleSize * 2) >= Backdrop.W) opts.inSampleSize *= 2;
+            int need = light ? Backdrop.WIDE_W : Backdrop.W;   // the light design builds its cards from the wide card's width
+            while (bounds.outWidth / (opts.inSampleSize * 2) >= need) opts.inSampleSize *= 2;
             Bitmap b = BitmapFactory.decodeFile(f.getPath(), opts);
             if (b == null) throw new IOException("unreadable image");
-            AppLog.w("backdrop \u201c" + p.title + "\u201d: " + bounds.outWidth + "×" + bounds.outHeight + " → " + Backdrop.W + "×" + Backdrop.H);
+            AppLog.w("backdrop \u201c" + p.title + "\u201d: " + bounds.outWidth + "×" + bounds.outHeight + " → " + need + " wide");
             boolean forLight = light;
             Backdrop backdrop = Backdrop.make(b, forLight);
             if (forLight != light) return;   // the design changed midway: this one is stale
@@ -1303,7 +1371,7 @@ final class Recs {
             // Watchmode links of titles no longer in the list go (the refused-key mark stays).
             Set<String> keep = new HashSet<>();
             for (Pick p : picks) keep.add(linkKey(p));
-            for (String k : cache.getAll().keySet()) if (k.startsWith("wm:") && !k.equals("wm:refused") && !keep.contains(k)) e.remove(k);
+            for (String k : cache.getAll().keySet()) if ((k.startsWith("wm:") || k.startsWith("wm2:")) && !k.equals("wm:refused") && !keep.contains(k)) e.remove(k);
             e.apply();
         } catch (Exception ignored) {
         }

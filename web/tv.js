@@ -11,6 +11,14 @@ var TV = (function () {
   var webos = typeof window.PalmServiceBridge !== 'undefined';
   var samsung = !webos && typeof window.tizen !== 'undefined' && !!window.tizen.application;
   var calls = [];   // a bridge is collected if nothing holds it before its reply arrives
+  var tizen2 = samsung && /Tizen 2\./.test(navigator.userAgent);
+  // Tizen 2 (2016 TVs, WebKit 538) repaints every shadow on every frame of a focus animation: home.css turns them off.
+  // So do TVs under 2 GB that draw the page at twice its size (an LG on webOS TV Lite 10, MT5889, 1.3 GB, ratio 2:
+  // 23-28 fps moving along the shelf, 60 with lite; shadows off alone, 45). deviceMemory rounds down to 1 under 2 GB on
+  // webOS 5+ and Tizen 5+, where 1.5 GB TVs at a ratio of 1 run smoothly.
+  if (tizen2 || ((webos || samsung) && navigator.deviceMemory && navigator.deviceMemory <= 1 && (window.devicePixelRatio || 1) > 1)) {
+    document.documentElement.className += ' lite';
+  }
 
   /** One Luna call; done(result) with null on failure. */
   function luna(uri, params, done) {
@@ -33,9 +41,29 @@ var TV = (function () {
     bridge.call(uri, JSON.stringify(params || {}));
   }
 
+  // LG's own screensaver asks every subscribed app first. While Free My TV is on screen and its own screensaver will
+  // take over (`hold`, from home.js), it says no; otherwise, and in the background, the TV's runs as before.
+  var saverBridge = null;
+
+  function holdScreenSaver(hold) {
+    if (!webos || saverBridge) return;
+    saverBridge = new window.PalmServiceBridge();
+    saverBridge.onservicecallback = function (message) {
+      var m = null;
+      try { m = JSON.parse(message); } catch (e) {}
+      if (!m || m.timestamp === undefined) return;
+      luna('luna://com.webos.service.tvpower/power/responseScreenSaverRequest',
+          {clientName: self, ack: !!document.hidden || !hold(), timestamp: m.timestamp});
+    };
+    saverBridge.call('luna://com.webos.service.tvpower/power/registerScreenSaverRequest',
+        JSON.stringify({subscribe: true, clientName: self}));
+  }
+
   // webOS 6 gives Developer Mode apps only the "public" group, which leaves out listLaunchPoints. There the list comes
   // from the TV's remote control API on 127.0.0.1:3000 (the one LG's phone app uses), which takes file:// pages.
-  // The TV asks once to allow it; the key it gives back is kept.
+  // The TV asks once to allow it; the key it gives back is kept. Newer firmware gives the page its own origin
+  // (file://<app id>-webos), which the API refuses with 1008 "invalid origin": there our JS service (webos/service)
+  // makes the call.
   var SSAP_KEY = 'fmtv.ssapKey', SSAP_REFUSED = 'fmtv.ssapRefused';
 
   /** One call to the remote control API; done(result) with null on failure. */
@@ -71,7 +99,23 @@ var TV = (function () {
         finish(m.type !== 'error' && m.payload && m.payload.returnValue !== false ? m.payload : null);
       }
     };
-    ws.onerror = ws.onclose = function () { finish(null); };
+    ws.onerror = function () { finish(null); };
+    ws.onclose = function (event) {
+      if (event.code === 1008 && !finished) viaService(); else finish(null);
+    };
+    function viaService() {
+      clearTimeout(timer);
+      timer = setTimeout(function () { finish(null); }, 100000);   // the service waits 90 s for the prompt
+      luna('luna://' + self + '.service/ssap', {uri: uri, clientKey: key}, function (res) {
+        if (res && res.clientKey) {
+          try { localStorage.setItem(SSAP_KEY, res.clientKey); } catch (e) {}
+        }
+        if (res && res.refused) {
+          try { localStorage.setItem(SSAP_REFUSED, '1'); } catch (e) {}   // the person said no on the TV
+        }
+        finish(res && res.payload && res.payload.returnValue !== false ? res.payload : null);
+      });
+    }
   }
 
   // LG inputs: the antenna and the four HDMI ports, with the apps LG opens for them.
@@ -86,15 +130,23 @@ var TV = (function () {
   // Not shown among LG's apps: the inputs above, LG's own home and launchers.
   var HIDDEN = /^(com\.webos\.app\.(livetv|hdmi\d|home|homeconnect|discovery|launcher)|com\.webos\.app\.inputpicker)$/;
 
-  // Not shown among Samsung's apps: Smart Hub's own pieces, the platform's tools and players (but its browser and
-  // Netflix, which live there too), services, keyboards and ad players. The rest is what Smart Hub shows.
+  // Not shown among Samsung's apps: Smart Hub's own pieces, the platform's tools and players (but its browser,
+  // Netflix and Prime Video, which live there too), services, keyboards and ad players. The rest is what Smart Hub shows.
   // Tizen 4 also lists Samsung's own pieces: the YouTube engine's hosts (cobalt-*: "App", "Youtube", "YoutubeTV"),
   // Bixby, search, previews, the weather and notification popups, Apple TV's stand-in and engine.
-  var SAMSUNG_HIDDEN = new RegExp('^(org\\.volt\\.|org\\.tizen\\.(?!browser$|netflix)|org\\.tizen\\.netflixlowmem$|ise-|ug-|d75857a5-)' +
+  // A 2020 TU8000 (Tizen 5.5) ships Prime Video as org.tizen.primevideo, next to a -dummy and a _companionapp.
+  // A 2023 Q60C (Tizen 9 in Brazil) ships Globoplay as org.tizen.globoplayapp.
+  // A 2023 CU7700 (Tizen 9) leaves `show` unset on ~500 apps: Samsung's system namespaces go, but for the store,
+  // SmartThings, Apple TV (aria-video), TV Plus, Gaming Hub and Windows 365.
+  var SAMSUNG_HIDDEN = new RegExp('^(org\\.volt\\.|org\\.tizen\\.(?!browser$|netflix|primevideo$|globoplay)|org\\.tizen\\.netflixlowmem$|ise-|ug-|d75857a5-)' +
       '|[Ss]ervice$|[Dd]aemon|Preview$|syspopup|[Hh]elper$|AdPlayer|AdSuite|[Kk]eyboard|\\.OTApp$' +
-      '|^com\\.samsung\\.(calendar-account-manager|tv\\.(cobalt-|aria-(dummy|engine)|airplay-app|ambient-support|' +
-      'built-in-app-info-viewer|commonsearch|searchall|preview-|tv-scheduler|csfs|notification-app|mycontents|' +
-      'safLaunchBridge|shortcut|remote-workspace|voiceassistant|mybixby|weather-viewer))');
+      '|^com\\.samsung\\.calendar-account-manager' +
+      '|^com\\.samsung\\.tv\\.(?!store$|SmartThingsApp$|aria-video$|knox-browser-win365$|tvplus$|gaminghub$)' +
+      '|^com\\.samsung\\.tizen\\.' +
+      '|^com\\.samsung\\.(ep[-.]|rdm[-.]|SelfDiagnosis$|mtm-banner$|hitcomp$|video-test$)' +
+      '|^com\\.sausng\\.' +
+      '|^adplatform\\.' +
+      '|^(unified-drm-|lib-|p2p-asm|mobilebff$|comss$|acm-watcher$|dmr_service_app$|aifw-|csapi-|capi-|ep-|test-|emergency-log-transmitter$|samsung-easy-support$)');
 
   // Samsung apps whose iconPath is Tizen's generic pinwheel (a valid image, so onerror never fires): our own icons.
   // Seen on a 2018 NU7675 (Tizen 4); Smart Hub draws their real icons from a folder apps can't read. On a 2017
@@ -103,6 +155,7 @@ var TV = (function () {
   var SAMSUNG_ICONS = {
     '9Ur5IzDKqV.TizenYouTube': 'icons/youtube.png',
     'evKhCgZelL.AmazonIgnitionLauncher2': 'icons/prime.png',
+    'org.tizen.primevideo': 'icons/prime.png',
     'RN1MCdNq8t.Netflix': 'icons/netflix.svg',
     'org.tizen.netflix-app': 'icons/netflix.svg',
     'NvZ26VG9Yw.HBOGOLAG': 'icons/max.svg',
@@ -121,7 +174,8 @@ var TV = (function () {
   var SAMSUNG_TITLES = {
     'NvZ26VG9Yw.HBOGOLAG': 'Max',
     'rJeHak5zRg.Spotify': 'Spotify',
-    'evKhCgZelL.AmazonIgnitionLauncher2': 'Prime Video'
+    'evKhCgZelL.AmazonIgnitionLauncher2': 'Prime Video',
+    'org.tizen.globoplayapp': 'Globoplay'
   };
 
   // Samsung's settings menu on Tizen 3, which answers no "settings" app control.
@@ -139,14 +193,17 @@ var TV = (function () {
   ];
 
   // Newer webOS (11 tested) denies listLaunchPoints to Developer Mode apps, but still answers getAppLoadStatus for
-  // one app id: these are checked one by one there. Their icons can't be read, so the shelf shows their names.
+  // one app id: these are checked one by one there. Their icons can't be read, so they get our logo where web/icons
+  // has one, as on Samsung, and otherwise their name on the brand's color: [id, title, logo, color].
   var KNOWN = [
-    ['netflix', 'Netflix'], ['youtube.leanback.v4', 'YouTube'], ['amazon', 'Prime Video'],
-    ['com.disney.disneyplus-prod', 'Disney+'], ['com.wbd.stream', 'HBO Max'], ['com.hbo.hbomax', 'Max'],
+    ['netflix', 'Netflix', 'icons/netflix.svg'], ['youtube.leanback.v4', 'YouTube', 'icons/youtube.png'],
+    ['amazon', 'Prime Video', 'icons/prime.png'], ['com.disney.disneyplus-prod', 'Disney+'],
+    ['com.wbd.stream', 'HBO Max', 'icons/max.svg'], ['com.hbo.hbomax', 'Max', 'icons/max.svg'],
     ['com.apple.appletv', 'Apple TV'], ['hulu', 'Hulu'], ['com.peacock.tv', 'Peacock'], ['com.nfl.app', 'NFL'],
-    ['globoplaywebos', 'Globoplay'], ['spotify-beehive', 'Spotify'], ['tv.twitch.tv.starshot.lg', 'Twitch'],
-    ['cdp-30', 'Plex'], ['org.jellyfin.webos', 'Jellyfin'], ['com.crunchyroll.webapp', 'Crunchyroll'],
-    ['com.webos.app.browser', 'Web Browser']
+    ['globoplaywebos', 'Globoplay'], ['spotify-beehive', 'Spotify', 'icons/spotify.svg'],
+    ['tv.twitch.tv.starshot.lg', 'Twitch', '', '#9146FF'], ['cdp-30', 'Plex', '', '#E5A00D'],
+    ['org.jellyfin.webos', 'Jellyfin', 'icons/jellyfin.svg'], ['com.crunchyroll.webapp', 'Crunchyroll', '', '#F47521'],
+    ['com.webos.app.browser', 'Web Browser', '', '#3A7BD5']
   ];
 
   function knownApps(done) {
@@ -159,7 +216,7 @@ var TV = (function () {
     setTimeout(finish, 5000);   // an id that never answers doesn't hold the rest
     KNOWN.forEach(function (k, i) {
       luna('luna://com.webos.applicationManager/getAppLoadStatus', {appId: k[0]}, function (res) {
-        if (res && res.exist) found[i] = {id: k[0], title: k[1], icon: '', color: ''};
+        if (res && res.exist) found[i] = {id: k[0], title: k[1], icon: k[2] || '', color: k[3] || ''};
         if (--left === 0) finish();
       });
     });
@@ -177,14 +234,19 @@ var TV = (function () {
     try {
       window.tizen.application.getAppsInfo(function (list) {
         var out = [];
+        // App ids named in shelf_apps stay even with show false, and are looked up when the list leaves them out:
+        // Moonlight, installed in Developer Mode on a 2023 Q60C (Tizen 9), never reached the shelf though Smart Hub
+        // lists it. Only whole ids, so a name in shelf_apps can't bring back the platform's hidden pieces.
+        var ids = ((window.CONFIG || {}).shelfApps || []).filter(function (w) { return w.indexOf('.') > 0; });
         for (var i = 0; i < list.length; i++) {
           var a = list[i];
-          if (!a.id || a.show === false || a.id === self || SAMSUNG_HIDDEN.test(a.id)) continue;
-          var icon = a.iconPath || '';
-          if (icon && icon.indexOf('://') < 0) icon = 'file://' + icon;
-          if (SAMSUNG_ICONS[a.id]) icon = SAMSUNG_ICONS[a.id];
-          out.push({id: a.id, title: SAMSUNG_TITLES[a.id] || a.name || a.id, icon: icon, color: ''});
+          if (!a.id || a.id === self || SAMSUNG_HIDDEN.test(a.id) || (a.show === false && ids.indexOf(a.id) < 0)) continue;
+          out.push(samsungApp(a));
         }
+        ids.forEach(function (id) {
+          if (out.some(function (x) { return x.id === id; })) return;
+          try { out.push(samsungApp(window.tizen.application.getAppInfo(id))); } catch (e) {}
+        });
         // The built-in Netflix stays only when the store's Netflix isn't installed.
         var store = out.some(function (x) { return /\.Netflix$/.test(x.id); });
         if (store) out = out.filter(function (x) { return x.id.indexOf('org.tizen.netflix') !== 0; });
@@ -195,6 +257,13 @@ var TV = (function () {
     } catch (e) {
       done([]);
     }
+  }
+
+  function samsungApp(a) {
+    var icon = a.iconPath || '';
+    if (icon && icon.indexOf('://') < 0) icon = 'file://' + icon;
+    if (SAMSUNG_ICONS[a.id]) icon = SAMSUNG_ICONS[a.id];
+    return {id: a.id, title: SAMSUNG_TITLES[a.id] || a.name || a.id, icon: icon, color: ''};
   }
 
   function samsungLaunch(id, done) {
@@ -272,10 +341,94 @@ var TV = (function () {
     }
   }
 
+  // MARK: - About this TV
+
+  /** done({model, firmware, system, version, ip}), with '' for what the TV doesn't tell. */
+  function about(done) {
+    var out = {model: '', firmware: '', system: '', version: '', ip: ''}, left = 1, sent = false;
+    function wait() { left++; }
+    function finish() {
+      if (--left > 0 || sent) return;
+      sent = true;
+      clearTimeout(timer);
+      done(out);
+    }
+    var timer = setTimeout(function () { left = 1; finish(); }, 4000);   // a service that never answers doesn't hold the rest
+
+    if (webos) {
+      // The services LG's webOSTV.js reads for webOS.deviceInfo, and its public connection manager.
+      wait();
+      luna('luna://com.webos.service.tv.systemproperty/getSystemInfo', {keys: ['modelName', 'firmwareVersion', 'sdkVersion']}, function (res) {
+        if (res) {
+          out.model = res.modelName || '';
+          out.firmware = res.firmwareVersion || '';
+          if (!out.system && res.sdkVersion) out.system = 'webOS ' + res.sdkVersion;
+        }
+        finish();
+      });
+      wait();
+      luna('luna://com.webos.service.systemservice/osInfo/query', {parameters: ['webos_release']}, function (res) {
+        if (res && res.webos_release) out.system = 'webOS ' + res.webos_release;
+        finish();
+      });
+      wait();
+      luna('luna://com.palm.connectionmanager/getStatus', {}, function (res) {
+        if (res) {
+          var wired = res.wired || {}, wifi = res.wifi || {};
+          if (wired.state === 'connected' && wired.ipAddress) out.ip = wired.ipAddress;
+          else if (wifi.state === 'connected' && wifi.ipAddress) out.ip = wifi.ipAddress;
+        }
+        finish();
+      });
+      wait();
+      // The app's own version: its appinfo.json, beside index.html.
+      var x = new XMLHttpRequest();
+      x.onreadystatechange = function () {
+        if (x.readyState !== 4) return;
+        try { out.version = JSON.parse(x.responseText).version || ''; } catch (e) {}
+        finish();
+      };
+      try { x.open('GET', 'appinfo.json', true); x.send(); } catch (e) { finish(); }
+    } else if (samsung) {
+      var info = window.tizen.systeminfo;
+      try { out.model = info.getCapability('http://tizen.org/system/model_name') || ''; } catch (e) {}
+      try { out.system = 'Tizen ' + info.getCapability('http://tizen.org/feature/platform.version'); } catch (e) {}
+      try { out.version = window.tizen.application.getCurrentApplication().appInfo.version || ''; } catch (e) {}
+      var property = function (name, got) {
+        wait();
+        try {
+          info.getPropertyValue(name, function (v) { got(v); finish(); }, function () { finish(); });
+        } catch (e) {
+          finish();
+        }
+      };
+      // BUILD's buildVersion is the firmware (T-KTMDEUC-1250.4); its model is the panel's (UN55NU7100) where model_name is a code.
+      property('BUILD', function (v) {
+        if (v.buildVersion) out.firmware = v.buildVersion;
+        if (v.model) out.model = v.model;
+      });
+      property('ETHERNET_NETWORK', function (v) {
+        if (v.status === 'ON' && v.ipAddress) out.ip = v.ipAddress;
+      });
+      property('WIFI_NETWORK', function (v) {
+        if (v.status === 'ON' && v.ipAddress && !out.ip) out.ip = v.ipAddress;
+      });
+    } else {
+      out = {model: 'OLED55C1', firmware: '03.33.85', system: 'webOS 6.0', version: 'preview', ip: '192.168.1.50'};
+    }
+    finish();
+  }
+
   // MARK: - The TV, whichever it is
 
   return {
     name: webos ? 'webos' : samsung ? 'tizen' : 'browser',
+
+    /**
+     * Whether an app can open the TV's settings. Not on Tizen 2 (a 2016 KU6300): the "settings" request and
+     * org.tizen.menu both answer success and nothing shows, and the remote API ignores MENU and HOME.
+     */
+    canOpenSettings: !tizen2,
 
     /** Installed apps, as the TV's launcher lists them: [{id, title, icon, color}]. */
     apps: function (done) {
@@ -299,6 +452,13 @@ var TV = (function () {
         // Denied to Developer Mode apps (webOS 6 and newer): once the TV has allowed the remote control API, it lists
         // every app with its icon; until then, the known apps the TV says it has, while the TV asks once (an answer
         // only counts from the next load on, and a "no" isn't asked again).
+        // webOS 3 has neither getAppLoadStatus nor a remote control API that takes file:// pages ("invalid origin"):
+        // there the list comes from the computer (webos/apps.py), built into the LG package.
+        var built = (window.CONFIG && CONFIG.installedApps) || [];
+        if (built.length) {
+          done(built.filter(function (a) { return a.id !== self && !HIDDEN.test(a.id); }));
+          return;
+        }
         var paired = false, refused = false;
         try { paired = !!localStorage.getItem(SSAP_KEY); refused = !!localStorage.getItem(SSAP_REFUSED); } catch (e) {}
         if (paired) {
@@ -361,6 +521,12 @@ var TV = (function () {
       if (samsung) samsungSettings(done);
       else this.launch('com.palm.app.settings', null, done);
     },
+
+    /** The TV's model, firmware, system, IP address and this app's version, for About this TV. */
+    about: about,
+
+    /** LG: keeps the TV's screensaver away while ours will take over (`hold` says when). */
+    holdScreenSaver: holdScreenSaver,
 
     /** Back on the first screen: back to wherever the person came from. */
     back: function () {

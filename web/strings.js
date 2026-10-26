@@ -15,13 +15,13 @@ var I18N = (function () {
 
   /** The usual country for each language's dates and numbers, when the TV itself is in another language. */
   var REGIONS = {pt: 'BR', es: 'ES', de: 'DE', fr: 'FR', it: 'IT', nl: 'NL', pl: 'PL', sv: 'SE', da: 'DK', nb: 'NO',
-    fi: 'FI', cs: 'CZ', ro: 'RO', tr: 'TR', ru: 'RU', uk: 'UA', el: 'GR', ja: 'JP', ko: 'KR', hi: 'IN', id: 'ID', vi: 'VN'};
+    fi: 'FI', cs: 'CZ', ro: 'RO', tr: 'TR', ru: 'RU', uk: 'UA', el: 'GR', ja: 'JP', ko: 'KR', hi: 'IN', id: 'ID', vi: 'VN', th: 'TH'};
 
   /** Each language in its own name, for TVs without Intl.DisplayNames (Chromium before 81). */
   var NAMES = {en: 'English', pt: 'Português', es: 'Español', de: 'Deutsch', fr: 'Français', it: 'Italiano',
     nl: 'Nederlands', pl: 'Polski', sv: 'Svenska', da: 'Dansk', nb: 'Norsk bokmål', fi: 'Suomi', cs: 'Čeština',
     ro: 'Română', tr: 'Türkçe', ru: 'Русский', uk: 'Українська', el: 'Ελληνικά', ja: '日本語', ko: '한국어',
-    'zh-CN': '中文', hi: 'हिन्दी', id: 'Indonesia', vi: 'Tiếng Việt'};
+    'zh-CN': '简体中文', 'zh-TW': '繁體中文', hi: 'हिन्दी', id: 'Indonesia', vi: 'Tiếng Việt', th: 'ไทย'};
 
   /**
    * The CLDR plural category of a whole number, for TVs without Intl.PluralRules (Chromium before 63). Only the
@@ -206,8 +206,9 @@ var I18N = (function () {
       if (code) return code;
     }
     var tv = (navigator.language || 'en').replace('_', '-');
-    // Simplified Chinese only where it is the written form (not Taiwan, Hong Kong or Macau).
-    if (base(tv) === 'zh' && /-(Hant|TW|HK|MO)\b/i.test(tv)) return 'en';
+    // Taiwan, Hong Kong and Macau write Traditional Chinese: never the Simplified catalogue there (unless the TV
+    // itself is set to Simplified, zh-Hans-HK).
+    if (base(tv) === 'zh' && !/-Hans\b/i.test(tv) && /-(Hant|TW|HK|MO)\b/i.test(tv)) return CATALOGUES['zh-TW'] ? 'zh-TW' : 'en';
     return match(base(tv)) || 'en';
   }
 

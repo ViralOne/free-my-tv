@@ -203,6 +203,9 @@ final class Ui {
 
     /** The language's own name, capitalized: "Português", "Deutsch", "Français", "日本語". */
     static String languageName(String code) {
+        // Both Chinese catalogues are "中文" to Java: the script tells them apart.
+        if (code.equalsIgnoreCase("zh-CN")) return "简体中文";
+        if (code.equalsIgnoreCase("zh-TW")) return "繁體中文";
         Locale l = Locale.forLanguageTag(code);
         String name = l.getDisplayLanguage(l);
         if (name.isEmpty()) return code;
@@ -211,7 +214,12 @@ final class Ui {
 
     /** After the language changes in the settings (and once Prefs can read them). */
     static synchronized void applyLanguage() {
-        String lang = resolve(Prefs.language());
+        applyLanguage(Prefs.language());
+    }
+
+    /** The same for a setting ("auto", "fr"…) given by the caller (SleepOverlay gets it in its Intent). */
+    static synchronized void applyLanguage(String setting) {
+        String lang = resolve(setting);
         Map<String, String> cat = Collections.emptyMap();
         if (!lang.equals("en")) {
             cat = load(lang);
@@ -225,6 +233,7 @@ final class Ui {
         plurals = PluralRules.forLocale(locale);
         language = lang;
         DATE_PATTERNS.clear();
+        DATE_PATTERNS_24.clear();
         generation++;
     }
 
@@ -236,9 +245,13 @@ final class Ui {
         }
         Locale tv = Locale.getDefault();
         String lang = base(tv.getLanguage());
-        // Simplified Chinese only where it is the written form (not Taiwan, Hong Kong or Macau).
-        if (lang.equals("zh") && ("Hant".equals(tv.getScript()) || "TW".equals(tv.getCountry())
-                || "HK".equals(tv.getCountry()) || "MO".equals(tv.getCountry()))) return "en";
+        // Taiwan, Hong Kong and Macau write Traditional Chinese: never the Simplified catalogue there (unless the TV
+        // itself is set to Simplified, zh-Hans-HK).
+        if (lang.equals("zh") && !"Hans".equals(tv.getScript()) && ("Hant".equals(tv.getScript()) || "TW".equals(tv.getCountry())
+                || "HK".equals(tv.getCountry()) || "MO".equals(tv.getCountry()))) {
+            for (String code : languages()) if (code.equalsIgnoreCase("zh-TW")) return code;
+            return "en";
+        }
         String code = match(lang);
         return code != null ? code : "en";
     }
@@ -346,6 +359,34 @@ final class Ui {
         return Math.max(0, Math.min(1, v));
     }
 
+    /** Largest 2w×2h step `downscale` takes (about 10 MB). */
+    private static final long SMOOTH_STEP_PIXELS = 2_600_000;
+
+    /**
+     * Filtered down to w × h without jagged edges: bilinear filtering reads only 2×2 pixels, so no step shrinks more
+     * than 2×. Halves while it can; when over 1.5× is left, goes up to 2w × 2h and halves exactly, else one last step.
+     * Never recycles src; may return it (when it already has the size).
+     */
+    static Bitmap downscale(Bitmap src, int w, int h) {
+        w = Math.max(1, w);
+        h = Math.max(1, h);
+        Bitmap b = src;
+        while (b.getWidth() / 2 >= w && b.getHeight() / 2 >= h) {
+            Bitmap half = Bitmap.createScaledBitmap(b, b.getWidth() / 2, b.getHeight() / 2, true);
+            if (b != src) b.recycle();
+            b = half;
+        }
+        if ((2 * b.getWidth() > 3 * w || 2 * b.getHeight() > 3 * h) && 4L * w * h <= SMOOTH_STEP_PIXELS) {
+            Bitmap twice = Bitmap.createScaledBitmap(b, 2 * w, 2 * h, true);
+            if (b != src) b.recycle();
+            b = twice;
+        }
+        if (b.getWidth() == w && b.getHeight() == h) return b;
+        Bitmap out = Bitmap.createScaledBitmap(b, w, h, true);
+        if (b != src && b != out) b.recycle();
+        return out;
+    }
+
     static final int[] BAYER = {0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5};
 
     static Shader gradient(int height, int top, int bottom) {
@@ -367,16 +408,21 @@ final class Ui {
         return new BitmapShader(b, Shader.TileMode.REPEAT, Shader.TileMode.CLAMP);
     }
 
-    private static final Map<String, DatePattern> DATE_PATTERNS = new HashMap<>();
+    private static final Map<String, DatePattern> DATE_PATTERNS = new HashMap<>(), DATE_PATTERNS_24 = new HashMap<>();
+    /** English follows the TV's 12/24-hour setting (Settings → System → Date & time); other languages have their own. */
+    private static final String[][] TWENTY_FOUR = {{"format|h:mm", "HH:mm"}, {"format|h:mm a", "HH:mm"}, {"format|h a", "HH:mm"}};
 
     /**
      * The catalogue's SimpleDateFormat pattern for a "format|..." key and its locale, checked once per language: a pattern
      * SimpleDateFormat rejects falls back to the English one, so a bad catalogue can't crash the screens drawing the date.
      */
     static synchronized DatePattern datePattern(String key) {
-        DatePattern pattern = DATE_PATTERNS.get(key);
+        boolean h24 = language.equals("en") && Prefs.clock24();
+        Map<String, DatePattern> patterns = h24 ? DATE_PATTERNS_24 : DATE_PATTERNS;
+        DatePattern pattern = patterns.get(key);
         if (pattern == null) {
             String text = tr(key);
+            if (h24) for (String[] f : TWENTY_FOUR) if (f[0].equals(key)) text = f[1];
             Locale loc = locale();
             try {
                 new SimpleDateFormat(text, loc);
@@ -386,7 +432,7 @@ final class Ui {
                 loc = Locale.US;
             }
             pattern = new DatePattern(text, loc);
-            DATE_PATTERNS.put(key, pattern);
+            patterns.put(key, pattern);
         }
         return pattern;
     }
@@ -405,14 +451,14 @@ final class Ui {
         }
     }
 
-    /** "21:47" (in English, "9:47", like the iPhone in the US). */
+    /** "21:47" (in 12-hour English, "9:47", like the iPhone in the US). */
     static String clock(long now) {
         return Ui.datePattern("format|h:mm").format(now);
     }
 
-    /** "5:21" (sunrise and sunset; in English, "5:21 AM"). */
+    /** "5:21" (sunrise and sunset; in 12-hour English, "5:21 AM", in 24-hour English, "05:21"). */
     static String time(long at) {
-        return once("time", at, () -> Ui.datePattern("format|h:mm a").format(at));
+        return once(Prefs.clock24() ? "time24" : "time", at, () -> Ui.datePattern("format|h:mm a").format(at));
     }
 
     private static final HashMap<String, String> FORMATTED = new HashMap<>();

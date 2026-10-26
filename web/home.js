@@ -34,6 +34,9 @@
     var ns = 'http://www.w3.org/2000/svg';
     var svg = document.createElementNS(ns, 'svg');
     svg.setAttribute('viewBox', '0 0 32 32');
+    // Old WebKit (Tizen 2) draws an SVG without them at 300×150; the CSS still sets the size everywhere it's shown.
+    svg.setAttribute('width', '15');
+    svg.setAttribute('height', '15');
     for (var k = 0; k < c.length; k++) {
       var p = document.createElementNS(ns, 'path');
       p.setAttribute('d', c[k]);
@@ -76,7 +79,9 @@
     ['jellyfin', /jellyfin/i, /jellyfin/i, ['#AA5CC3', '#00A4DC']],
     ['spotify', /spotify/, /spotify/i, ['#1DB954', '#0F7A36']]
   ];
-  var MAX_SHELF = 8;
+  // Apps shown at once, as on Android: 8 (today's smallest tiles, 178 wide); the shelf scrolls for the rest. The
+  // built-in list keeps 8 too.
+  var SHELF_VISIBLE = 8, FEW_APPS = 8;
 
   function shelfKey(app) {
     for (var i = 0; i < SHELF.length; i++) if (SHELF[i][1].test(app.id) || SHELF[i][2].test(app.title)) return SHELF[i];
@@ -95,38 +100,214 @@
     return Math.max(18, Math.min(max, Math.floor(width * 0.8 / (Math.max(4, title.length) * 0.56))));
   }
 
-  /** An app's face: its own icon on its brand color (or its name, when the icon can't be read). */
+  // MARK: - Logos
+
+  // The TV's icons are small squares with their own background (white behind Netflix, black behind Max). Like the
+  // Android app does with the TV art, the logo is lifted off it once: the background goes transparent and the rest is
+  // cropped to the logo, which then fills the tile on the brand's color.
+  var lifted = {};   // icon url -> {src, bg: [r, g, b], ink: luminance histogram} or false (keep the icon as it is)
+  var LIFT_SIZE = 240;
+
+  // sRGB (0-255) to linear light, computed once: lift() needs it for every pixel, and old TVs are slow at Math.pow.
+  var LINEAR = [];
+  for (var li = 0; li < 256; li++) LINEAR[li] = li <= 10 ? li / 255 / 12.92 : Math.pow((li / 255 + 0.055) / 1.055, 2.4);
+
+  /** Relative luminance (0-1) of an sRGB color (whole numbers, as read from the canvas). */
+  function luminance(r, g, b) {
+    return 0.2126 * LINEAR[r] + 0.7152 * LINEAR[g] + 0.0722 * LINEAR[b];
+  }
+
+  function rgbOf(color) {
+    var m = /^#?([0-9a-f]{6})$/i.exec(color || '');
+    if (m) { var n = parseInt(m[1], 16); return [(n >> 16) & 255, (n >> 8) & 255, n & 255]; }
+    m = /rgb\((\d+),\s*(\d+),\s*(\d+)\)/.exec(color || '');
+    return m ? [+m[1], +m[2], +m[3]] : [0, 0, 0];
+  }
+
+  function lift(img) {
+    var w = img.naturalWidth, h = img.naturalHeight;
+    if (!w || !h) return false;
+    var f = Math.min(1, LIFT_SIZE / Math.max(w, h));
+    w = Math.max(1, Math.round(w * f));
+    h = Math.max(1, Math.round(h * f));
+    var canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = h;
+    var g = canvas.getContext('2d');
+    var data;
+    try {
+      g.drawImage(img, 0, 0, w, h);
+      data = g.getImageData(0, 0, w, h);
+    } catch (e) {
+      return false;   // a TV that doesn't let the page read its icons
+    }
+    var px = data.data;
+    // The background: the most common color a little inside the edges (rounded icons have transparent corners).
+    var votes = {}, best = null, bestN = 0, inset = Math.round(Math.min(w, h) * 0.08);
+    for (var s = 0; s < 64; s++) {
+      var t = s % 16 / 16, side = s >> 4;
+      var x = side < 2 ? Math.round(inset + t * (w - 2 * inset)) : side === 2 ? inset : w - 1 - inset;
+      var y = side < 2 ? (side === 0 ? inset : h - 1 - inset) : Math.round(inset + t * (h - 2 * inset));
+      var i = (y * w + x) * 4;
+      var key = px[i + 3] < 128 ? 'clear' : (px[i] >> 4) + ',' + (px[i + 1] >> 4) + ',' + (px[i + 2] >> 4);
+      votes[key] = (votes[key] || 0) + 1;
+      if (votes[key] > bestN) { bestN = votes[key]; best = key === 'clear' ? null : [px[i], px[i + 1], px[i + 2]]; }
+    }
+    var minX = w, minY = h, maxX = -1, maxY = -1, ink = [0, 0, 0, 0, 0, 0, 0, 0], inkSum = 0;
+    for (var p = 0; p < w * h; p++) {
+      var j = p * 4, a = px[j + 3] / 255;
+      if (best) {
+        // color to alpha: how far each channel is from the background, as a share of how far it could go, so the
+        // anti-aliased edges come out as the logo's color, partly clear, without a fringe of the background
+        var k = 0, c;
+        for (c = 0; c < 3; c++) {
+          var v = px[j + c], o = best[c];
+          k = Math.max(k, v > o ? (v - o) / Math.max(1, 255 - o) : (o - v) / Math.max(1, o));
+        }
+        k = Math.max(0, Math.min(1, (k - 0.1) / 0.9));   // compression noise stays clear
+        if (k > 0 && k < 1) {
+          for (c = 0; c < 3; c++) px[j + c] = Math.max(0, Math.min(255, best[c] + (px[j + c] - best[c]) / k));
+        }
+        a *= k;
+      }
+      px[j + 3] = Math.round(a * 255);
+      if (a > 0.3) {
+        var px0 = p % w, py0 = (p / w) | 0;
+        if (px0 < minX) minX = px0;
+        if (px0 > maxX) maxX = px0;
+        if (py0 < minY) minY = py0;
+        if (py0 > maxY) maxY = py0;
+        ink[Math.min(7, Math.floor(Math.sqrt(luminance(px[j], px[j + 1], px[j + 2])) * 8))] += a;
+        inkSum += a;
+      }
+    }
+    // Nothing left, or nothing taken away (a picture rather than a logo on a background): keep the icon.
+    if (maxX < 0 || (maxX - minX > w * 0.96 && maxY - minY > h * 0.96)) return false;
+    var crop = document.createElement('canvas');
+    crop.width = maxX - minX + 1;
+    crop.height = maxY - minY + 1;
+    g.putImageData(data, 0, 0);
+    crop.getContext('2d').drawImage(canvas, minX, minY, crop.width, crop.height, 0, 0, crop.width, crop.height);
+    for (var b = 0; b < 8; b++) ink[b] /= inkSum;
+    try {
+      return {src: crop.toDataURL('image/png'), bg: best, ink: ink};
+    } catch (e2) {
+      return false;
+    }
+  }
+
+  /**
+   * Share of the logo that hardly shows on a tile of this luminance (YouTube's black type on a dark tile). Each bin
+   * of the histogram holds the ink whose square-root luminance falls in it.
+   */
+  function unseen(ink, tileLum) {
+    var share = 0;
+    for (var b = 0; b < 8; b++) {
+      var l = Math.pow((b + 0.5) / 8, 2);
+      if ((Math.max(l, tileLum) + 0.05) / (Math.min(l, tileLum) + 0.05) < 1.8) share += ink[b];
+    }
+    return share;
+  }
+
+  function paint(box, top, bottom) {
+    box.style.background = '-webkit-linear-gradient(top, ' + top + ', ' + bottom + ')';
+    box.style.background = 'linear-gradient(' + top + ', ' + bottom + ')';
+  }
+
+  /** A color that is clearly a hue (Crunchyroll's orange), not black, white or a gray. */
+  function colorful(rgb) {
+    return Math.max(rgb[0], rgb[1], rgb[2]) - Math.min(rgb[0], rgb[1], rgb[2]) >= 96;
+  }
+
+  /**
+   * The logo's box in its own proportions, as large as object-fit: contain draws it. Chrome 38 (webOS 3) ignores
+   * object-fit while a tile next to it animates, and the logo stretched to its 70% x 50% box until the move ended.
+   * Not laid out yet (a closed sheet): object-fit stays, and fitLogos() runs when the sheet opens.
+   */
+  function fitLogo(img) {
+    var box = img.parentNode, bw = img.offsetWidth, bh = img.offsetHeight, nw = img.naturalWidth, nh = img.naturalHeight;
+    if (!box || !bw || !bh || !nw || !nh || img.style.width) return;
+    var s = Math.min(bw / nw, bh / nh);
+    img.style.width = nw * s / box.offsetWidth * 100 + '%';
+    img.style.height = nh * s / box.offsetHeight * 100 + '%';
+  }
+
+  function fitLogos(root) {
+    var imgs = root.querySelectorAll('img.logo');
+    for (var i = 0; i < imgs.length; i++) if (imgs[i].complete) fitLogo(imgs[i]);
+  }
+
+  /** own: the tile has the TV's color for the app, not one of SHELF's. */
+  function showLogo(img, box, top, bottom, logo, own) {
+    img.className = 'logo';
+    img.onload = function () { img.onload = null; fitLogo(img); };
+    img.src = logo.src;
+    if (img.complete) fitLogo(img);
+    var a = rgbOf(top), z = rgbOf(bottom);
+    var tileLum = (luminance(a[0], a[1], a[2]) + luminance(z[0], z[1], z[2])) / 2;
+    // The tile takes the icon's background when the logo only reads on it, and when that background is the brand's
+    // color: LG's bgColor isn't always the icon's (Crunchyroll's is black, on an orange icon).
+    if (logo.bg && ((own && colorful(logo.bg)) || unseen(logo.ink, tileLum) > 0.35)) {
+      var bg = 'rgb(' + logo.bg.join(',') + ')';
+      var hex = '#' + ((1 << 24) | (logo.bg[0] << 16) | (logo.bg[1] << 8) | logo.bg[2]).toString(16).slice(1);
+      paint(box, bg, darken(hex, 0.93));
+    }
+  }
+
+  /** An app's face: its logo on its brand color (or its name, when the icon can't be read). */
   function face(app, box, wordSize) {
     var k = shelfKey(app);
     var top = k ? k[3][0] : app.color ? darken(app.color, 0.92) : '#2A2A2E';
     var bottom = k ? k[3][1] : app.color ? darken(app.color, 0.62) : '#161618';
-    box.style.background = '-webkit-linear-gradient(top, ' + top + ', ' + bottom + ')';
-    box.style.background = 'linear-gradient(' + top + ', ' + bottom + ')';
+    paint(box, top, bottom);
     var word = el('div', 'word', box, app.title);
     if (wordSize) word.style.fontSize = wordSize + 'px';
     if (app.icon) {
-      var img = el('img', '', box);
+      var img = el('img', '', box), url = app.icon;
       word.style.visibility = 'hidden';
-      img.onerror = function () { img.parentNode.removeChild(img); word.style.visibility = ''; };
-      img.src = app.icon;
+      img.onerror = function () { if (img.parentNode) img.parentNode.removeChild(img); word.style.visibility = ''; };
+      if (lifted[url]) { showLogo(img, box, top, bottom, lifted[url], !k); return; }
+      if (lifted[url] !== false) {
+        img.onload = function () {
+          img.onload = null;
+          if (lifted[url] === undefined) lifted[url] = lift(img);
+          if (lifted[url]) showLogo(img, box, top, bottom, lifted[url], !k);
+        };
+      }
+      img.src = url;
     }
   }
 
   var apps = [], shelf = [], others = [], inputs = [];
 
+  /** shelf_apps in config.properties: the shelf in that order, by id or name (part of it). */
+  var WANTED = (CONFIG.shelfApps || []).map(function (s) { return s.toLowerCase(); });
+
   function pickShelf() {
+    if (WANTED.length && Prefs.shelfConfig() !== WANTED.join(',')) {
+      Prefs.set('shelf', null);
+      Prefs.set('shelfConfig', WANTED.join(','));
+    }
     var chosen = Prefs.shelf(), out = [];
     if (chosen) {
-      for (var i = 0; i < chosen.length && out.length < MAX_SHELF; i++) {
+      for (var i = 0; i < chosen.length; i++) {
         for (var j = 0; j < apps.length; j++) if (apps[j].id === chosen[i]) out.push(apps[j]);
       }
+    } else if (WANTED.length) {
+      for (var w = 0; w < WANTED.length; w++) {
+        for (var k = 0; k < apps.length; k++) {
+          var id = apps[k].id.toLowerCase(), title = apps[k].title.toLowerCase();
+          if ((id.indexOf(WANTED[w]) >= 0 || title.indexOf(WANTED[w]) >= 0) && out.indexOf(apps[k]) < 0) { out.push(apps[k]); break; }
+        }
+      }
+      if (!out.length) out = apps.slice(0, FEW_APPS);
     } else {
-      for (var s = 0; s < SHELF.length && out.length < MAX_SHELF; s++) {
+      for (var s = 0; s < SHELF.length && out.length < FEW_APPS; s++) {
         for (var a = 0; a < apps.length; a++) {
           if ((SHELF[s][1].test(apps[a].id) || SHELF[s][2].test(apps[a].title)) && out.indexOf(apps[a]) < 0) { out.push(apps[a]); break; }
         }
       }
-      if (!out.length) out = apps.slice(0, MAX_SHELF);
+      if (!out.length) out = apps.slice(0, FEW_APPS);
     }
     shelf = out;
     others = apps.filter(function (x) { return shelf.indexOf(x) < 0; });
@@ -134,11 +315,11 @@
 
   // MARK: - Focus
 
-  var Z = {TOP: 'top', CARDS: 'cards', SHELF: 'shelf', DRAWER: 'drawer', APPS: 'apps', SETTINGS: 'settings', EDIT: 'edit', LANG: 'lang'};
-  var st = {zone: Z.SHELF, top: 0, tab: 0, card: 0, shelf: 0, drawer: 0, grid: 0, row: 0, edit: 0, lang: 0};
+  var Z = {TOP: 'top', CARDS: 'cards', SHELF: 'shelf', DRAWER: 'drawer', APPS: 'apps', SETTINGS: 'settings', EDIT: 'edit', LANG: 'lang', CITY: 'city', ABOUT: 'about'};
+  var st = {zone: Z.SHELF, top: 0, tab: 0, card: 0, shelf: 0, drawer: 0, grid: 0, row: 0, edit: 0, lang: 0, city: 0};
   var cards = [];
 
-  function sheetOpen() { return st.zone === Z.APPS || st.zone === Z.SETTINGS || st.zone === Z.EDIT || st.zone === Z.LANG; }
+  function sheetOpen() { return st.zone === Z.APPS || st.zone === Z.SETTINGS || st.zone === Z.EDIT || st.zone === Z.LANG || st.zone === Z.CITY || st.zone === Z.ABOUT; }
 
   function updateFocus() {
     var i, list;
@@ -154,6 +335,7 @@
     for (i = 0; i < list.length; i++) setClass(list[i], 'focus', st.zone === Z.CARDS && st.card === i);
     list = $('tiles').children;
     for (i = 0; i < list.length; i++) setClass(list[i], 'focus', st.zone === Z.SHELF && st.shelf === i);
+    revealShelf();
     list = document.querySelectorAll('#drawer .key');
     for (i = 0; i < list.length; i++) setClass(list[i], 'focus', st.zone === Z.DRAWER && st.drawer === i);
     list = document.querySelectorAll('#apps .cell');
@@ -164,6 +346,7 @@
     focusRows($('shelfedit'), st.edit, st.zone === Z.EDIT);
     focusRows($('langpick'), st.lang, st.zone === Z.LANG);
     if (langHint) langHint.textContent = (st.lang + 1) + ' / ' + languageChoices().length + '  ·  ' + tr('OK picks, Back cancels.');
+    focusRows($('citypick'), st.city, st.zone === Z.CITY);
     setClass(body, 'drawer-open', st.zone === Z.DRAWER);
   }
 
@@ -284,10 +467,18 @@
     c.lastChild.textContent = formatDate('format|EEEE, MMMM d', d.getTime());
   }
 
+  /** On the minute, so the clock never runs late (the 30-second refresh could, by up to 30 s). */
+  function tickClock() {
+    renderClock();
+    setTimeout(tickClock, 60000 - Date.now() % 60000 + 50);
+  }
+
   // MARK: - Shelf
 
+  var shelfFirst = 0, tileStep = 0, tileLeft = 0;
+
   function renderShelf() {
-    var n = shelf.length, gap = 48, pad = 40;
+    var n = Math.min(shelf.length, SHELF_VISIBLE), gap = 48, pad = 40;
     // 16:9 tiles, as on Android: never taller than 126, and the glass keeps its bottom edge.
     var tw = Math.min(126 * 16 / 9, (1760 - Math.max(0, n - 1) * gap) / Math.max(1, n)), th = tw * 9 / 16;
     var width = n * tw + Math.max(0, n - 1) * gap, left = (1920 - width) / 2;
@@ -300,16 +491,52 @@
     $('quotes').style.right = (1920 - left - width) + 'px';
     var tiles = $('tiles');
     tiles.innerHTML = '';
-    for (var i = 0; i < n; i++) {
+    tileStep = tw + gap;
+    tileLeft = left;
+    shelfFirst = Math.max(0, Math.min(shelfFirst, shelf.length - n));
+    for (var i = 0; i < shelf.length; i++) {
       var t = el('div', 'tile', tiles);
-      t.style.left = (left + i * (tw + gap)) + 'px';
       t.style.top = (854 + 126 - th) + 'px';
       t.style.width = tw + 'px';
       t.style.height = th + 'px';
       face(shelf[i], t, wordFit(shelf[i].title, tw, 30));
       hover(t, Z.SHELF, i);
     }
-    st.shelf = Math.min(st.shelf, Math.max(0, n - 1));
+    // More apps than fit: a small arrow inside the glass's edge on each side that has more, where no tile reaches
+    // even focused (inside the screen's safe area, as on Android).
+    platter.innerHTML = '';
+    for (var a = 0; a < 2; a++) {
+      var arrow = sym('chevron_right', platter);
+      arrow.className += a ? ' more' : ' more back';
+      arrow.style.left = (a ? width + 2 * pad - 14 : 14) - 8.5 + 'px';
+      arrow.style.top = (pad + th / 2 - 8.5) + 'px';
+    }
+    st.shelf = Math.min(st.shelf, Math.max(0, shelf.length - 1));
+    placeTiles();
+  }
+
+  /** The row slides (a transform on #tiles, which old TVs animate), and the apps it takes past the glass fade out. */
+  function placeTiles() {
+    var row = $('tiles'), tiles = row.children, n = Math.min(shelf.length, SHELF_VISIBLE);
+    for (var i = 0; i < shelf.length; i++) {
+      var shown = i >= shelfFirst && i < shelfFirst + n;
+      tiles[i].style.left = (tileLeft + i * tileStep) + 'px';
+      tiles[i].style.opacity = shown ? '' : '0';
+      tiles[i].style.pointerEvents = shown ? '' : 'none';
+    }
+    row.style.webkitTransform = row.style.transform = 'translateX(' + (-shelfFirst * tileStep) + 'px)';
+    var arrows = $('platter').children;
+    arrows[0].style.visibility = shelfFirst > 0 ? '' : 'hidden';
+    arrows[1].style.visibility = shelfFirst + n < shelf.length ? '' : 'hidden';
+  }
+
+  /** Scrolls the shelf, one app at a time, so the focused app is shown. */
+  function revealShelf() {
+    var n = Math.min(shelf.length, SHELF_VISIBLE);
+    var first = Math.max(0, Math.min(Math.max(shelfFirst, st.shelf - n + 1), Math.min(st.shelf, shelf.length - n)));
+    if (first === shelfFirst || !shelf.length) return;
+    shelfFirst = first;
+    placeTiles();
   }
 
   // MARK: - Drawer
@@ -327,7 +554,7 @@
     drawerInputs = drawerItems.length;
     drawerItems.push({label: tr('All Apps'), symbol: 'apps', run: openApps});
     drawerItems.push({label: tr('Home Settings'), symbol: 'settings', run: openSettings});
-    drawerItems.push({label: tr('TV Settings'), symbol: 'tv_settings', run: tvSettings});
+    if (TV.canOpenSettings) drawerItems.push({label: tr('TV Settings'), symbol: 'tv_settings', run: tvSettings});
     var n = drawerItems.length, gap = 18, groupGap = 56, groups = drawerInputs > 0 && drawerInputs < n ? 2 : 1;
     var tw = Math.min(230, (1760 - Math.max(0, n - groups) * gap - (groups - 1) * groupGap) / Math.max(1, n));
     var xPos = 80;
@@ -385,14 +612,17 @@
     el('div', 'cond', card, Data.condition(w.code, w.isDay));
     el('div', 'range', card, trf('H:{max}', {max: Data.degrees(w.max)}) + '   ' + trf('L:{min}', {min: Data.degrees(w.min)}));
     el('div', 'split', card);
-    var hours = el('div', 'hours', card), width = parseFloat(card.style.width) - 30 - 422, hw = width / 6;
-    for (var i = 0; i < w.hours.length && i < 6; i++) {
-      var h = el('div', 'hour', hours), x = w.hours[i];
+    // Home Settings → Forecast: the next 6 hours or the next 5 days (the hours until a forecast has days).
+    var days = Prefs.forecast() === 'days' && w.days && w.days.length > 0, list = days ? w.days : w.hours, n = days ? 5 : 6;
+    var hours = el('div', 'hours', card), width = parseFloat(card.style.width) - 30 - 422, hw = width / n;
+    for (var i = 0; list && i < list.length && i < n; i++) {
+      var h = el('div', 'hour', hours), x = list[i];
       h.style.left = (hw * i) + 'px';
       h.style.width = hw + 'px';
-      el('div', 't', h, Data.hour(x.at));
-      sym(Data.symbol(x.code, x.day), h);
-      el('div', 'd', h, Data.degrees(x.temp));
+      el('div', 't', h, days ? Data.weekday(x.at) : Data.hour(x.at));
+      sym(Data.symbol(x.code, days || x.day), h);
+      var t = el('div', 'd', h, Data.degrees(days ? x.max : x.temp));
+      if (days) el('span', 'low', t, Data.degrees(x.min));
     }
     var sun = el('div', 'sun', card);
     if (w.sunrise) { var a = el('span', '', sun); sym('sunrise', a); a.appendChild(document.createTextNode(trf('Sunrise {time}', {time: Data.time(w.sunrise)}))); }
@@ -451,6 +681,7 @@
     st.zone = Z.APPS;
     st.grid = 0;
     setClass($('apps'), 'open', true);
+    fitLogos($('apps'));
     updateFocus();
   }
 
@@ -459,6 +690,9 @@
     setClass($('settings'), 'open', false);
     setClass($('shelfedit'), 'open', false);
     setClass($('langpick'), 'open', false);
+    setClass($('about'), 'open', false);
+    closeCityField();
+    setClass($('citypick'), 'open', false);
     langHint = null;
     st.zone = Z.SHELF;
     updateFocus();
@@ -476,8 +710,14 @@
         step: function (d) { cycle('temperature', ['auto', 'C', 'F'], unit, d); renderPanels(); }},
       {label: tr('Theme'), value: theme === 'light' ? tr('Light') : theme === 'dark' ? tr('Dark') : auto,
         step: function (d) { cycle('theme', ['auto', 'light', 'dark'], theme, d); checkNight(); }},
+      {label: tr('Watch from the screensaver'), toggle: Prefs.saverWatch(),
+        step: function () { Prefs.set('saverWatch', !Prefs.saverWatch()); }},
       {label: tr('Weather widget'), toggle: Prefs.weather(),
         step: function () { Prefs.set('weather', !Prefs.weather()); renderPanels(); }},
+      {label: tr('City'), value: Prefs.city() || '—', opens: true, city: true,
+        step: function (d) { if (d >= 0) openCities(); }},
+      {label: tr('Forecast'), value: Prefs.forecast() === 'days' ? tr('Next days') : tr('Next hours'),
+        step: function (d) { cycle('forecast', ['hours', 'days'], Prefs.forecast(), d); renderPanels(); }},
       {label: tr('Quotes widget'), toggle: Prefs.quotes(),
         step: function () { Prefs.set('quotes', !Prefs.quotes()); Data.settingsChanged(); }}
     ];
@@ -489,8 +729,9 @@
           step: function () { if (Prefs.quotes()) { Prefs.setCoin(i, !Prefs.coin(i)); Data.settingsChanged(); } }});
       })(i);
     }
-    rows.push({label: tr('Shelf'), value: '›', step: function (d) { if (d >= 0) openShelfEdit(); }});
-    rows.push({label: tr('TV Settings'), value: '›', step: function (d) { if (d >= 0) tvSettings(); }});
+    rows.push({label: tr('Shelf'), value: '›', shelf: true, step: function (d) { if (d >= 0) openShelfEdit(); }});
+    rows.push({label: tr('About this TV'), value: '›', about: true, step: function (d) { if (d >= 0) openAbout(); }});
+    if (TV.canOpenSettings) rows.push({label: tr('TV Settings'), value: '›', step: function (d) { if (d >= 0) tvSettings(); }});
     return rows;
   }
 
@@ -586,6 +827,159 @@
     updateFocus();
   }
 
+  // MARK: - City: typed with the TV's keyboard, found by Open-Meteo, as on Android (the weather is for its coordinates)
+
+  var cityFound = [], cityStatus = '', cityTimer = 0, citySeq = 0;
+
+  /** The field to type in, the Search row, then the places found. */
+  function cityRows() { return 2 + cityFound.length; }
+
+  function cityField() { return $('citypick').querySelector('input'); }
+
+  function renderCities() {
+    var box = $('citypick').firstChild, old = cityField(), typed = old ? old.value : '', inField = old && document.activeElement === old;
+    box.innerHTML = '';
+    el('div', 'title', box, tr('City'));
+    var list = el('div', 'list', box), holder = el('div', 'rows', list);
+    list.style.height = Math.min(cityRows(), 7) * 78 + 'px';
+    var field = el('input', '', el('div', 'row field', holder));
+    field.type = 'text';
+    field.value = typed;
+    field.placeholder = tr("Type the city's name");
+    field.setAttribute('aria-label', tr('City'));
+    field.setAttribute('autocomplete', 'off');
+    field.setAttribute('spellcheck', 'false');
+    hover(field.parentNode, Z.CITY, 0);
+    var search = el('div', 'row', holder, tr('Search'));
+    sym('chevron_right', el('span', 'value', search));
+    hover(search, Z.CITY, 1);
+    for (var i = 0; i < cityFound.length; i++) {
+      var row = el('div', 'row', holder, cityFound[i].label);
+      hover(row, Z.CITY, 2 + i);
+    }
+    el('div', 'hint', box, cityStatus || tr('OK picks, Back cancels.'));
+    if (inField) openCityField();   // a message that went away while typing: the keyboard stays
+    updateFocus();
+  }
+
+  function openCities() {
+    setClass($('settings'), 'open', false);
+    st.zone = Z.CITY;
+    st.city = 0;
+    cityFound = [];
+    cityStatus = '';
+    $('citypick').firstChild.innerHTML = '';
+    renderCities();
+    setClass($('citypick'), 'open', true);
+    openCityField();
+  }
+
+  /** Into the field: the TV shows its keyboard. */
+  function openCityField() {
+    var f = cityField();
+    if (!f) return;
+    f.focus();
+    try { f.setSelectionRange(f.value.length, f.value.length); } catch (e) {}
+  }
+
+  function closeCityField() {
+    var f = cityField();
+    if (f && document.activeElement === f) f.blur();
+  }
+
+  function setCityStatus(text) {
+    cityStatus = text;
+    clearTimeout(cityTimer);
+    // Clears only the hint: a new render would rebuild the field and interrupt the TV's keyboard while someone types.
+    if (text && text !== tr('Searching…')) cityTimer = setTimeout(function () {
+      cityStatus = '';
+      var hint = st.zone === Z.CITY && $('citypick').querySelector('.hint');
+      if (hint) hint.textContent = tr('OK picks, Back cancels.');
+    }, 4000);
+    if (st.zone === Z.CITY) renderCities();
+  }
+
+  function searchCity() {
+    var f = cityField(), name = f ? f.value : '';
+    closeCityField();
+    if (!name.trim()) { st.city = 0; openCityField(); updateFocus(); return; }
+    if (cityStatus === tr('Searching…')) return;
+    setCityStatus(tr('Searching…'));
+    var mine = ++citySeq;   // an answer for a sheet already closed (and opened again) is dropped
+    Data.findCity(name, function (err, found) {
+      if (mine !== citySeq) return;
+      if (st.zone !== Z.CITY) { cityStatus = ''; return; }
+      cityFound = found || [];
+      if (cityFound.length) st.city = 2;   // on the first place found
+      setCityStatus(err ? trf("Couldn't search now: {error}", {error: err.message}) : cityFound.length ? '' : tr('No city with that name.'));
+    });
+  }
+
+  /** OK on a place: the weather moves there. Back (pick false): nothing changes. Either way, back on the City row. */
+  function closeCities(pick) {
+    var place = pick && cityFound[st.city - 2];
+    closeCityField();
+    setClass($('citypick'), 'open', false);
+    cityFound = [];
+    citySeq++;
+    clearTimeout(cityTimer);
+    cityStatus = '';
+    if (place) {
+      Prefs.setCity(place.city, place.lat, place.lon);
+      Data.cityChanged();
+    }
+    openSettings();
+    for (var i = 0; i < rowsNow.length; i++) if (rowsNow[i].city) st.row = i;
+    updateFocus();
+  }
+
+  function activateCity() {
+    if (st.city === 0) openCityField();
+    else if (st.city === 1) searchCity();
+    else closeCities(true);
+  }
+
+  // MARK: - About this TV: what to quote when reporting a problem, without LG's or Samsung's slow menus
+
+  function renderAbout(info) {
+    var box = $('about').firstChild;
+    box.innerHTML = '';
+    el('div', 'title', box, tr('About this TV'));
+    var list = el('div', 'list', box), holder = el('div', 'rows', list);
+    var rows = [
+      [tr('Model'), info && info.model], [tr('Firmware'), info && info.firmware], [tr('System'), info && info.system],
+      [tr('IP address'), info && info.ip], [tr('Time zone'), TV.zone()], ['Free My TV', info && info.version]
+    ];
+    for (var i = 0; i < rows.length; i++) {
+      var row = el('div', 'row', holder), label = el('span', '', row, rows[i][0]);
+      fitValue(row, label, el('span', 'value', row, info ? rows[i][1] || tr('Unavailable') : '…'));
+    }
+    el('div', 'hint', box, tr('Back closes.'));
+  }
+
+  /** A long value (Samsung's firmware) gets smaller instead of running over its label, and ends in "…" if even the smallest size is too wide. */
+  function fitValue(row, label, value) {
+    var room = row.clientWidth - label.offsetWidth - 2 * 24 - 24;   // the row's padding, and a gap after the label
+    for (var size = 30; value.offsetWidth > room && size > 18; size -= 2) value.style.fontSize = size - 2 + 'px';
+    if (value.offsetWidth > room) { value.style.maxWidth = room + 'px'; setClass(value, 'cut', true); }
+  }
+
+  function openAbout() {
+    setClass($('settings'), 'open', false);
+    st.zone = Z.ABOUT;
+    renderAbout(null);
+    setClass($('about'), 'open', true);
+    updateFocus();
+    TV.about(function (info) { if (st.zone === Z.ABOUT) renderAbout(info); });
+  }
+
+  function closeAbout() {
+    setClass($('about'), 'open', false);
+    openSettings();
+    for (var i = 0; i < rowsNow.length; i++) if (rowsNow[i].about) st.row = i;
+    updateFocus();
+  }
+
   // MARK: - Shelf editor: which apps, in what order
 
   function editList() {
@@ -607,10 +1001,11 @@
     list.style.height = Math.min(e.rows.length, 7) * 78 + 'px';
     for (var i = 0; i < e.rows.length; i++) {
       var a = e.rows[i], at = e.ids.indexOf(a.id), row = el('div', 'row', holder, a.title);
-      el('span', 'value', row, at >= 0 ? '#' + (at + 1) : tr('shelf|Off'));
+      var place = el('span', 'value', row, at >= 0 ? '#' + (at + 1) : tr('shelf|Off'));
+      if (at >= 0) sym('check', place).style.marginLeft = '16px';   // on the shelf: a check, as in the pickers
       hover(row, Z.EDIT, i);
     }
-    el('div', 'hint', box, trf('OK adds or removes (up to {n}). ← → change the order.', {n: MAX_SHELF}));
+    el('div', 'hint', box, tr('OK adds or removes an app. ← → change the order.'));
     updateFocus();
   }
 
@@ -629,8 +1024,7 @@
     var ids = e.ids.slice(), at = ids.indexOf(app.id);
     if (dx === 0) {
       if (at >= 0) ids.splice(at, 1);
-      else if (ids.length < MAX_SHELF) ids.push(app.id);
-      else { toast(trf('The shelf holds up to {n} apps.', {n: MAX_SHELF})); return; }
+      else ids.push(app.id);
     } else {
       if (at < 0) return;
       var to = Math.max(0, Math.min(ids.length - 1, at + dx));
@@ -696,6 +1090,12 @@
       case Z.LANG:
         closeLanguages(true);
         return;
+      case Z.CITY:
+        activateCity();
+        return;
+      case Z.ABOUT:
+        closeAbout();
+        return;
     }
   }
 
@@ -752,13 +1152,24 @@
       case Z.LANG:
         if (dy) st.lang = Math.max(0, Math.min(languageChoices().length - 1, st.lang + dy));
         break;
+      case Z.CITY:
+        if (dy) st.city = Math.max(0, Math.min(cityRows() - 1, st.city + dy));
+        break;
     }
     updateFocus();
   }
 
   function back() {
-    if (st.zone === Z.EDIT) { setClass($('shelfedit'), 'open', false); openSettings(); st.row = rowsNow.length - 2; updateFocus(); return; }
+    if (st.zone === Z.EDIT) {
+      setClass($('shelfedit'), 'open', false);
+      openSettings();
+      for (var i = 0; i < rowsNow.length; i++) if (rowsNow[i].shelf) st.row = i;   // back on the Shelf row, whatever follows it
+      updateFocus();
+      return;
+    }
     if (st.zone === Z.LANG) { closeLanguages(false); return; }
+    if (st.zone === Z.CITY) { closeCities(false); return; }
+    if (st.zone === Z.ABOUT) { closeAbout(); return; }
     if (sheetOpen()) { closeSheets(); return; }
     if (st.zone === Z.DRAWER) { closeDrawer(); return; }
     if (st.zone !== Z.SHELF && shelf.length) { st.zone = Z.SHELF; updateFocus(); return; }
@@ -768,7 +1179,7 @@
   /** The pointer focuses what it's over (the Magic Remote, or a mouse when previewing). */
   function hover(node, zone, index) {
     node.onmouseover = function () {
-      if (saverOn || (sheetOpen() !== (zone === Z.APPS || zone === Z.SETTINGS || zone === Z.EDIT || zone === Z.LANG))) return;
+      if (saverOn || (sheetOpen() !== (zone === Z.APPS || zone === Z.SETTINGS || zone === Z.EDIT || zone === Z.LANG || zone === Z.CITY || zone === Z.ABOUT))) return;
       if (zone === Z.DRAWER && st.zone !== Z.DRAWER) return;
       if (zone !== Z.DRAWER && st.zone === Z.DRAWER && zone !== Z.SHELF) return;
       if (zone === Z.SHELF && st.zone === Z.DRAWER) closeDrawer();
@@ -781,6 +1192,7 @@
       else if (zone === Z.SETTINGS) st.row = index;
       else if (zone === Z.EDIT) st.edit = index;
       else if (zone === Z.LANG) st.lang = index;
+      else if (zone === Z.CITY) st.city = index;
       updateFocus();
     };
     node.onclick = function () { node.onmouseover(); activate(); };
@@ -799,15 +1211,28 @@
 
   // MARK: - Night, clock, screensaver
 
+  var lastNight = null;
+
   function checkNight() {
-    setClass(body, 'night', Data.isNight(Date.now()));
+    var night = Data.isNight(Date.now());
+    setClass(body, 'night', night);
+    if (night === lastNight) return;
+    lastNight = night;
+    document.documentElement.style.background = night ? '#0B0B0D' : '';
+    try { localStorage.setItem('fmtv.night', night ? 'true' : 'false'); } catch (e) {}   // for index.html, next start
   }
 
-  var saverOn = false, idleAt = Date.now(), saverIndex = 0, saverTimer = 0, SAVER_AFTER = 5 * 60000;
+  var saverOn = false, idleAt = Date.now(), saverIndex = 0, saverTimer = 0, saverPick = null, SAVER_AFTER = 5 * 60000;
+
+  /** The screensaver's photos: picks with an app on the TV. */
+  function saverPhotos() {
+    return Data.showcase().filter(function (p) { return p.backdrop && Data.appFor(p.app); });
+  }
 
   function showSaver() {
-    var photos = Data.showcase().filter(function (p) { return p.backdrop && Data.appFor(p.app); });
+    var photos = saverPhotos();
     saverOn = true;
+    saverPick = null;
     var s = $('saver');
     s.innerHTML = '';
     var a = el('div', 'photo', s), b = el('div', 'photo', s);
@@ -816,6 +1241,7 @@
     el('div', 'time', clock);
     el('div', 'date', clock);
     el('div', 'title', clock);
+    var hint = el('div', 'hint', clock);
     var front = a;
     function next() {
       if (!saverOn) return;
@@ -824,7 +1250,11 @@
       if (p) {
         back.style.backgroundImage = 'url(' + Data.image(p.backdrop, 'original') + ')';
         back.style.webkitTransform = back.style.transform = 'scale(1.0)';
-        clock.lastChild.textContent = p.title;
+        clock.children[2].textContent = p.title;
+        saverPick = p;
+        // With Watch from the screensaver on, OK opens this title's app (any other key only closes).
+        var app = Prefs.saverWatch() && Data.appFor(p.app);
+        hint.textContent = app ? trf('Press OK to watch on {app} · any other button to close', {app: app.title}) : '';
         setTimeout(function () {
           setClass(back, 'on', true);
           setClass(front, 'on', false);
@@ -851,17 +1281,21 @@
     setClass($('saver'), 'on', false);
   }
 
-  function poke() {
+  function poke(ok) {
     idleAt = Date.now();
-    if (saverOn) { hideSaver(); return true; }
-    return false;
+    if (!saverOn) return false;
+    var app = ok && saverPick && Prefs.saverWatch() && Data.appFor(saverPick.app);
+    hideSaver();
+    if (app) launcher(app.id, app.title)();
+    return true;
   }
 
   // MARK: - Keys
 
   document.addEventListener('keydown', function (e) {
     var k = e.keyCode;
-    if (poke()) { e.preventDefault(); return; }   // the first press only wakes the screen
+    if (poke(k === TV.keys.ok)) { e.preventDefault(); return; }   // the first press only wakes the screen (or OK watches)
+    if (typing(k)) return;
     if (k === TV.keys.left) move(-1, 0);
     else if (k === TV.keys.right) move(1, 0);
     else if (k === TV.keys.up) move(0, -1);
@@ -872,6 +1306,20 @@
     e.preventDefault();
   });
   document.addEventListener('mousemove', function () { poke(); });
+
+  /**
+   * In the city's field, the keys type (← → move in the text, Delete erases). OK or the keyboard's Done searches; Back,
+   * its Cancel or ↑ ↓ leave the field. Samsung's keyboard sends Done as 65376 and Cancel as 65385. True: handled here.
+   */
+  function typing(k) {
+    var f = cityField();
+    if (st.zone !== Z.CITY || !f || document.activeElement !== f) return false;
+    if (k === TV.keys.ok || k === 65376) searchCity();
+    else if (k === TV.keys.back || k === 27 || k === 65385) { closeCityField(); updateFocus(); }
+    else if (k === TV.keys.up || k === TV.keys.down) { closeCityField(); move(0, k === TV.keys.up ? -1 : 1); }
+    else return true;   // typed into the field
+    return true;
+  }
 
   // MARK: - Start
 
@@ -916,6 +1364,7 @@
     st.shelf = 0;
     if (st.tab !== 0) { st.tab = 0; renderCards(); }
     updateFocus();
+    restInDrawer();   // drawer_first: out again at once, not only after the TV lists its apps
   }
 
   Data.onChange(function () {
@@ -925,11 +1374,19 @@
     checkNight();
   });
 
+  /** drawer_first: the home screen rests with the drawer open (shelf in the middle, inputs and weather below). */
+  function restInDrawer() {
+    if (!CONFIG.drawerFirst || !drawerItems.length || st.zone !== Z.SHELF) return;
+    st.zone = Z.DRAWER;
+    st.drawer = 0;
+    updateFocus();
+  }
+
   function reopened() {
     // LG: with handlesRelaunch the app has to come to the front itself, or opening it again while it runs shows nothing.
     if (window.PalmSystem && window.PalmSystem.activate) window.PalmSystem.activate();
     reset();
-    loadApps(function () { renderShelf(); renderDrawer(); Data.refresh(); });
+    loadApps(function () { renderShelf(); renderDrawer(); restInDrawer(); Data.refresh(); });
   }
 
   window.addEventListener('resize', fit);
@@ -942,14 +1399,18 @@
   });
 
   I18N.set(Prefs.language());
+  checkNight();   // now, from the last forecast: not after the TV lists its apps, with the day look until then
+  // LG's screensaver waits only when ours will show: not under a sheet (ours waits there), and not without photos.
+  TV.holdScreenSaver(function () { return !sheetOpen() && saverPhotos().length > 0; });
   fit();
   renderTop();
+  tickClock();
   loadApps(function () {
     renderAll();
+    restInDrawer();
     Data.refresh();
   });
   setInterval(function () {
-    renderClock();
     checkNight();
     Data.refresh();
     if (!saverOn && !sheetOpen() && Date.now() - idleAt > SAVER_AFTER) showSaver();

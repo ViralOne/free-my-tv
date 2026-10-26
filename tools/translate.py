@@ -3,6 +3,7 @@
 
     python3 tools/translate.py                 # extract en.json from the code, report what each language lacks
     python3 tools/translate.py --fill          # also translate the missing strings (needs ANTHROPIC_API_KEY)
+    python3 tools/translate.py --fill --lang pt   # a hand-translated language (HAND): filled only when named
     python3 tools/translate.py --fill --lang fr --model claude-haiku-5-5
     python3 tools/translate.py --check         # validate all catalogues without writing anything
     python3 tools/translate.py --prune         # also remove keys the code no longer uses
@@ -20,6 +21,8 @@ to that language.
 and only the ones a catalogue lacks (or whose placeholders don't match the English). Every translation it gets back
 is kept in tools/.i18n-cache.json under a hash of its key (context + English), so the same text is never sent twice.
 Without ANTHROPIC_API_KEY it only reports, and exits with 1 when a catalogue is incomplete. Standard library only.
+The languages in HAND are translated by hand (the reference catalogues): --fill reports what they lack but doesn't
+fill it unless --lang names the language.
 """
 import argparse
 import hashlib
@@ -36,6 +39,7 @@ WEB = os.path.join(ROOT, "web")
 I18N = os.path.join(ROOT, "app", "assets", "i18n")
 CACHE = os.path.join(ROOT, "tools", ".i18n-cache.json")   # translations made with --fill, by hash (not committed)
 DEFAULT_MODEL = "claude-haiku-5-5"
+HAND = {"pt", "es", "de", "ru", "th", "tr"}   # hand translations: --fill leaves them to a person unless --lang names one
 CALL = re.compile(r"\bUi\.(trf?|plural|datePattern)\(")
 WEB_CALL = re.compile(r"(?:(?<![\w.$])|(?<=\bI18N\.))(trf?|plural|formatDate)\(")
 PLURAL_FORM = re.compile(r"^(zero|one|two|few|many|other):")
@@ -269,7 +273,7 @@ def check(en):
 NAMES = {"pt": "Brazilian Portuguese", "es": "Spanish", "de": "German", "fr": "French", "it": "Italian", "nl": "Dutch",
          "pl": "Polish", "sv": "Swedish", "da": "Danish", "nb": "Norwegian Bokmål", "fi": "Finnish", "cs": "Czech",
          "ro": "Romanian", "tr": "Turkish", "ru": "Russian", "uk": "Ukrainian", "el": "Greek", "ja": "Japanese",
-         "ko": "Korean", "zh-CN": "Simplified Chinese", "hi": "Hindi", "id": "Indonesian", "vi": "Vietnamese",
+         "ko": "Korean", "zh-CN": "Simplified Chinese", "zh-TW": "Traditional Chinese (Taiwan)", "hi": "Hindi", "id": "Indonesian", "vi": "Vietnamese",
          "hu": "Hungarian", "bg": "Bulgarian", "hr": "Croatian", "sk": "Slovak", "th": "Thai", "ms": "Malay"}
 
 PROMPT = """Translate the user interface strings of a TV home screen app ("Free My TV") from English into {name} ({lang}).
@@ -337,7 +341,9 @@ def main():
         cat = load(lang)
         missing, obsolete, broken = problems(en, cat)
         todo = sorted(set(missing) | set(broken))
-        if a.fill and key and todo:
+        if a.fill and key and todo and lang in HAND and not a.lang:
+            print(f"{lang}: translated by hand, {len(todo)} left for a person (--lang {lang} fills them anyway)")
+        elif a.fill and key and todo:
             known = cache.setdefault(lang, {})
             for k in todo:   # translated before (same English, same context): no need to ask again
                 if digest(k) in known and fits(k, en[k], known[digest(k)]):
